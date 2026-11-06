@@ -25,19 +25,31 @@ Two conventions, so an entry is never read as more than it is:
   it emptied, and `-PruneEmpty` does that unattended.
 - A plain run also tidies the inside of the category folders, and treats a folder found there as a
   project that moves whole — or not at all.
+- Every bucket gives up all its files, project folders collect under `Projects\<bucket>\`, the eight
+  category folders are scaffolded on any real run, and empty folders are offered for deletion every time.
 
 - The level-1 sweep now covers **every immediate subfolder**, not only folders named after a category, so
   loose files in `Media Assets\`, `Work\` or `Others\` are filed instead of ignored. On a live staging
   folder that turned 1 move into 20 without touching the internal structure of a single project.
-- A file only leaves a subfolder that is not a category when the tool knows where it belongs: if the
-  routed destination would be the fallback `Other\`, the file stays and is reported. `Mobile VPN\` keeps
-  its certificates and `Sync Configs\` its shortcuts; `Media Assets\` loses its 16 images to `Pictures\`.
-- `Retained in place` report: a capped console block grouped by folder (count plus up to six names), the
-  complete list in the exported preview file, and one `RETAINED` log line naming folders and counts. A
-  folder holding nothing but unrecognised files reports them and stops instead of claiming there was
-  nothing to organise.
+- ~~A file only leaves a subfolder that is not a category when the tool knows where it belongs: if the
+  routed destination would be the fallback `Other\`, the file stays and is reported.~~ **Superseded
+  later the same day** - see "every bucket gives up all its files" under Changed.
+- ~~`Retained in place` report~~: **superseded** with the rule it described; the console block, the
+  `RETAINED` log line and the export section were all removed in the same pass.
 - Tooling folders are never swept: dotted names, `node_modules`, `__pycache__`, `System Volume
   Information`, `$RECYCLE.BIN`, and anything reporting a `LinkType` (junctions, symlinks, OneDrive).
+
+- `Projects\` bucket: a folder found inside a bucket that is not a category is a project and moves whole
+  to `Projects\<bucket>\<name>`, keeping the bucket it came from so two unrelated `Scripts` folders stay
+  apart instead of becoming `Scripts` and `Scripts (2)`. Contents are never entered, and a folder already
+  inside `Projects\` is left alone.
+- Category scaffolding: `Archives`, `Documents`, `Music`, `Other`, `Pictures`, `Projects`, `Software` and
+  `Videos` all exist after any real run, whether or not anything was filed into them. The preview names
+  the ones it will create before the prompt; `-WhatIf` creates nothing.
+- Empty-folder pruning on every run, not just under `-Recurse`: every folder holding no files at any
+  depth is listed and offered for deletion, deepest first. Never the target itself, the eight category
+  folders, dotted folders, tooling trees or links. Each folder is re-checked immediately before a
+  non-recursive removal, `-PruneEmpty` prunes unattended, and `-Force` alone deletes nothing.
 
 ### Added
 
@@ -118,6 +130,20 @@ Two conventions, so an entry is never read as more than it is:
   both ways made every depth-1 file a duplicate of itself.
 - The export header now reads `Buckets : N folder(s) swept, M file(s), K already in place` plus
   `Retained : R file(s)`, replacing the category-only line.
+
+- **The retention rule is retired.** A file whose only destination is `Other\` now leaves its bucket
+  like every other file. `Mobile VPN\`'s certificates, `Sync Configs\` shortcuts and an `Others\` `.ps1`
+  all move to `Other\`; the buckets are then empty and become deletion candidates. Reverses the rule
+  added earlier the same day, deliberately: `Other\` is a category, not a scrap heap.
+- A project found inside a category bucket is still judged by its contents (`Documents\Sub3` with 10 jpg
+  moves to `Pictures\Sub3`, a folder pinned by document types goes to `Documents`, a tie stays), while a
+  project found inside any other bucket goes to `Projects\<bucket>\` regardless of contents. Two rules,
+  one per kind of bucket.
+- The early exit now needs more than "no files to move": it is silent only when there are also no
+  project moves, no category folders to create and no empty folders to offer. A run that would only
+  scaffold or only prune still asks first.
+- Execution order is files, then project folders, then scaffolding, then pruning, so a bucket emptied by
+  a folder move is judged empty in the same run.
 
 ### Changed
 

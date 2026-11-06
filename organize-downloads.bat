@@ -7,7 +7,9 @@ REM
 REM Usage: organize-downloads.bat [-Recurse] [-MaxDepth N] [-WhatIf] [-Force] [-MoveProjects] [-LogFile "path"] [-PreviewFile "path"] [-PruneEmpty] ["path to organise"]
 REM   -Recurse / -MaxDepth  also sort files found in subfolders - the ONLY way to flatten a tree.
 REM                         A double-click never asks, so it can never scatter a project folder.
-REM   -MoveProjects         move project folders to the category their contents belong in (asks first)
+REM   -MoveProjects         move project folders where they belong - into Projects\<bucket>\, or into
+REM                         the category a category-folder child's contents belong in (asks first)
+REM   -PruneEmpty           delete the empty folders found after the moves (asks first otherwise)
 REM
 REM The window stays open at the end so the result can be read. Pass -Force to skip that pause:
 REM unattended runs (Task Scheduler) and any other -Force caller exit immediately.
