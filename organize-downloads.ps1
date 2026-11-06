@@ -22,8 +22,9 @@
     it unattended, and -Force alone never moves one.
 
     -Recurse (or -MaxDepth N) additionally scans subfolders outside the category folders and files
-    everything into the top-level category folders; that structure is NOT preserved. Interactive
-    runs are asked first, with the file and folder counts, so the answer is informed.
+    everything into the top-level category folders; that structure is NOT preserved. This is the only
+    way to flatten a tree: a double-click never asks, so a plain run can only ever tidy loose files at
+    the two levels below. Pass the switch deliberately when you mean it.
     When a scan leaves subfolders with no files in them, the run ends by offering to delete those
     folders too; -PruneEmpty does it without asking. No directory is ever removed without one of
     those two - a plain run, and any -Force run without the switch, leaves every folder in place.
@@ -41,15 +42,17 @@
     The script never moves or deletes its own files: organize-downloads.ps1, organize-downloads.bat
     and organize-log.txt are listed as SKIP rows.
 
-    Default is a preview plus a [y/N] prompt. -WhatIf previews and exits. -Force runs unattended,
-    and neither -WhatIf nor -Force will ever ask about subfolders: they stay root-only unless the
-    switch is passed, so scheduled runs are deterministic.
+    Default is a preview plus a [y/N] prompt. -WhatIf previews and exits. -Force runs unattended.
+    Nothing asks about subfolders any more: only -Recurse or -MaxDepth reaches them, so a double-click
+    can never flatten the tree it was dropped into.
 
 .PARAMETER Path
     Folder to organise. Defaults to the folder this script lives in.
 
 .PARAMETER Recurse
-    Also sort files found in subfolders, into this folder's category folders.
+    Also sort files found in subfolders, into this folder's category folders. Subfolder structure is
+    not preserved, so this flattens a project tree - it is the only way to do that, and no run ever
+    asks you. Use -WhatIf first.
 
 .PARAMETER MaxDepth
     Limit how deep the scan goes, counting immediate subfolders as depth 1. Implies -Recurse.
@@ -378,25 +381,14 @@ $explicitScan = $Recurse -or ($MaxDepth -gt 0)
 $useSubfolders = $false
 $scanDirs = @()
 
-if ($explicitScan -or $interactive) {
-    $scanDirs = @(Get-ScanTargets -Root $Path -MaxDepth $MaxDepth)
-}
-
 if ($explicitScan) {
+    $scanDirs = @(Get-ScanTargets -Root $Path -MaxDepth $MaxDepth)
     $useSubfolders = $true
 }
-elseif ($interactive -and $scanDirs.Count -gt 0) {
-    $candidateFiles = 0
-    foreach ($dir in $scanDirs) {
-        $candidateFiles += @(Get-ChildItem -LiteralPath $dir.Dir -File -Force -ErrorAction SilentlyContinue).Count
-    }
-    if ($candidateFiles -gt 0) {
-        Write-Host ('Also sort the {0} files inside {1} subfolders? Their folder structure is not preserved.' -f $candidateFiles, $scanDirs.Count) -ForegroundColor Yellow
-        $scanAnswer = Read-Host '[y/N]'
-        if ($scanAnswer -match '^(y|yes)$') { $useSubfolders = $true }
-        Write-Host ''
-    }
-}
+
+# There is deliberately no prompt here. Asking "sort the subfolders too?" put every project folder
+# one keystroke from being scattered, and a folder in the tree is a project by design. Flattening is
+# a switch you type, never an answer you give at a prompt.
 
 # ---------------------------------------------------------------- plan
 # ---------------------------------------------------------------- gather
@@ -856,8 +848,8 @@ if ($folderPlan.Count -gt 0) {
             'Move these {0} project folders to their matching category? [y/N]' -f $folderPlan.Count
         }
         Write-Host $folderQuestion -ForegroundColor Yellow
-        $folderAnswer = Read-Host '[y/N]'
-        if ($folderAnswer -match '^(y|yes)$') { $moveFolders = $true }
+        $folderAnswer = ([string](Read-Host)).Trim()
+        if ($folderAnswer -match '^(?i)y(es)?$') { $moveFolders = $true }
     }
     if (-not $moveFolders) {
         $folderHint = if ($interactive) { '' } else { ' Pass -MoveProjects to move them without asking.' }
@@ -866,9 +858,14 @@ if ($folderPlan.Count -gt 0) {
     Write-Host ''
 }
 
+# Read-Host returns $null when stdin has run out, and "$null -notmatch 'pattern'" evaluates to
+# nothing at all - so "if ($answer -notmatch ...)" fell through and a run with no input available
+# proceeded to move files. Every answer is therefore cast to a string first, which makes an absent or
+# blank answer an explicit 'no'. Confirmation must fail closed.
 if (-not $Force) {
-    $answer = Read-Host 'Proceed? [y/N]'
-    if ($answer -notmatch '^(y|yes)$') {
+    Write-Host 'Proceed? [y/N]' -ForegroundColor Yellow
+    $answer = ([string](Read-Host)).Trim()
+    if ($answer -notmatch '^(?i)y(es)?$') {
         Write-Host 'Aborted. Nothing changed.' -ForegroundColor Yellow
         exit 0
     }
@@ -995,8 +992,8 @@ if ($emptied.Count -gt 0 -and (-not $WhatIf)) {
     elseif ($interactive) {
         Write-Host ''
         Write-Host ('Delete these {0} empty subfolders? [y/N]' -f $emptied.Count) -ForegroundColor Yellow
-        $pruneAnswer = Read-Host '[y/N]'
-        if ($pruneAnswer -match '^(y|yes)$') { $prune = $true }
+        $pruneAnswer = ([string](Read-Host)).Trim()
+        if ($pruneAnswer -match '^(?i)y(es)?$') { $prune = $true }
     }
 
     if ($prune) {

@@ -5,7 +5,8 @@ REM Put this .bat and the .ps1 in the folder you want sorted, then double-click.
 REM sit in is the folder that gets organised; -Path overrides it.
 REM
 REM Usage: organize-downloads.bat [-Recurse] [-MaxDepth N] [-WhatIf] [-Force] [-MoveProjects] [-LogFile "path"] [-PreviewFile "path"] [-PruneEmpty] ["path to organise"]
-REM   -Recurse / -MaxDepth  also sort files found in subfolders (asks first when run interactively)
+REM   -Recurse / -MaxDepth  also sort files found in subfolders - the ONLY way to flatten a tree.
+REM                         A double-click never asks, so it can never scatter a project folder.
 REM   -MoveProjects         move project folders to the category their contents belong in (asks first)
 REM
 REM The window stays open at the end so the result can be read. Pass -Force to skip that pause:

@@ -80,6 +80,7 @@ These are implemented, not aspirational:
 - **A project folder is opaque.** Nothing inside a folder that lives in a category folder is moved, renamed or deleted — not one file, at any depth. Only the folder itself can move.
 - **The tool never moves itself.** `organize-downloads.ps1`, `organize-downloads.bat`, `organize-log.txt` and `organize-preview.txt` are reported as `SKIP` and left where they are.
 - **Partial downloads are left alone** — `.crdownload`, `.part`, `.partial`, `.tmp`, `.download` — as are `desktop.ini` and `thumbs.db`.
+- **No input is a no.** Every confirmation is cast to a string and trimmed before it is tested, so an absent, blank or unrecognised answer aborts. `Read-Host` returns `$null` at end of input and `$null -notmatch 'pattern'` evaluates to nothing rather than `$true`, which once let a run with no input available proceed and move files.
 - **Only `~$` lock files are deleted**, which is what Office leaves behind when a document closes badly.
 - **A file already in its destination is never judged a duplicate of itself.**
 - **Every action is logged** with a timestamp, so a run can be unwound by hand from the log.
@@ -125,15 +126,18 @@ Whole-folder moves are asked about separately from the file moves, because they 
 
 ## Subfolder scan
 
-Off by default. `-Recurse` (or `-MaxDepth N`) files everything, at any depth, into the target's *top-level* category folders — the subfolder structure is not preserved. Interactive runs are asked first, with both counts, and the default is No:
+Off by default, and **only ever reached by typing the switch**. `-Recurse` (or `-MaxDepth N`) files everything, at any depth, into the target's *top-level* category folders — the subfolder structure is not preserved.
+
+There is no prompt offering this. An early version asked `Also sort the 1003 files inside 90 subfolders?` in the double-click flow, which put every project folder one keystroke from being scattered — a folder in the tree is a project by design, so asking to flatten it contradicted the whole point. A plain run now cannot leave the two tidy levels, however many times you press Enter.
 
 ```
-Also sort the 1000 files inside 90 subfolders? Their folder structure is not preserved.
+organize-downloads.bat -Recurse -WhatIf      # see what flattening would do, change nothing
+organize-downloads.bat -MaxDepth 1           # one level down only
 ```
 
 - Folders named after a category are never descended by this scan, so an existing `Documents\` is never flattened — its loose files are tidied by the level-2 pass instead, and the folders inside it are left as projects.
 - Junctions and symbolic links are never followed.
-- `-WhatIf` and `-Force` never ask, so unattended runs stay deterministic and root-only unless the switch is passed.
+- No run ever asks about subfolders, so a double-click and a scheduled run behave the same way: loose files only, unless the switch is passed.
 - Subfolders are reported when they are left with no files, and the run then asks once: `Delete these N empty subfolders? [y/N]`, defaulting to No.
   - Only folders the scan visited are candidates: never the target itself, never a folder named after a category, never a link.
   - Deletion runs deepest-first so a parent that only held emptied children goes too, and each folder is re-checked immediately before the delete — anything that appeared since the plan is kept and logged `PRUNE-SKIPPED`.

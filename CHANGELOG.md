@@ -46,8 +46,8 @@ Two conventions, so an entry is never read as more than it is:
   truncation, and a Notes block that keeps the full target and reason for every rename, duplicate
   and lock-file row.
 - Optional subfolder scan via `-Recurse`, or `-MaxDepth N` for a bounded pass.
-  - Interactive runs are asked first, quoting both counts, defaulting to No; `-WhatIf` and `-Force`
-    never ask, so unattended runs stay root-only unless the switch is passed.
+  - No run asks about subfolders: `-Recurse` or `-MaxDepth` is the only way in, so a double-click can
+    never flatten the tree it was dropped into.
   - Files at any depth are filed into the target's top-level category folders. Folders named after a
     category are never descended, and junctions and symbolic links are never followed.
   - Subfolders left with no files are reported, and the run then offers once to delete them; answering
@@ -94,6 +94,11 @@ Two conventions, so an entry is never read as more than it is:
   - Verified against the worked example: `Sub1` (5 docx, 3 jpg, 1 xlsx) and `Sub2` (2 docx, 5 jpg,
     1 xlsx) stay in `Documents`, `Sub3` (10 jpg) moves whole to `Pictures\Sub3`.
 
+- The interactive `Also sort the N files inside M subfolders?` question is gone. It made flattening a
+  keystroke away for anyone double-clicking, which is precisely what the level-2 tidy was introduced
+  to stop: a folder in the tree is a project, and a project is not entered. `-Recurse` / `-MaxDepth`
+  are now the only route, typed deliberately. Side effect: a plain run walks no directories at all,
+  and the prompt sequence is down to one question.
 ### Changed
 
 - Target resolution is now the launcher's own folder (`$ScriptDir`), never its parent. A copy placed
@@ -109,6 +114,14 @@ Two conventions, so an entry is never read as more than it is:
   the launcher is reused elsewhere.
 
 ### Fixed
+
+- A run whose confirmation prompt received no input at all **proceeded instead of aborting**, moving
+  files without a yes. `Read-Host` returns `$null` at end of input and `$null -notmatch 'pattern'`
+  evaluates to nothing, so `if ($answer -notmatch ...)` fell through. Every answer is now cast to a
+  string and trimmed first, so absent, blank, whitespace and unrecognised answers are all a no.
+  Found the hard way: an empty line piped into a live folder moved a file, and the action log named the
+  run that did it. Regression matrix now covers no input, blank, spaces, `n`, junk, `y`, `Y`, `Yes`
+  and ` y ` across the proceed, project-folder and prune prompts.
 
 - The organiser sorted one folder *up* from where it lived: a line deriving the target as
   `Split-Path -Parent $ScriptDir`, correct only while the script sat in a category folder, meant a
