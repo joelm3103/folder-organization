@@ -9,10 +9,21 @@
     The folder it organises is the folder it lives in - drop this script and its .bat into the
     folder you want sorted and run it there. -Path overrides that.
 
-    By default only files sitting directly in that folder are touched: no subfolders, no existing
-    category contents, never a directory. -Recurse (or -MaxDepth N) also scans subfolders and files
-    everything into the top-level category folders; the subfolder structure is NOT preserved.
-    Interactive runs are asked first, with the file and folder counts, so the answer is informed.
+    By default only loose files are touched, at two levels: files sitting directly in the folder,
+    and files sitting directly inside each of its category folders. That second pass is what lets a
+    screenshot left behind in Documents\ find its way to Pictures\. A file already sitting in its
+    own category folder is left alone without being listed.
+
+    A folder inside a category folder is treated as a project: nothing inside it is ever moved or
+    deleted. Only the folder as a whole can move, and only when its contents clearly belong
+    elsewhere. Real document types (doc, docx, xls, xlsx, ppt, pptx, ppsx, pdf, rtf) pin the folder
+    to Documents; otherwise the single largest category among its files decides, and a tie leaves
+    the folder where it is. Interactive runs are asked before any folder moves; -MoveProjects does
+    it unattended, and -Force alone never moves one.
+
+    -Recurse (or -MaxDepth N) additionally scans subfolders outside the category folders and files
+    everything into the top-level category folders; that structure is NOT preserved. Interactive
+    runs are asked first, with the file and folder counts, so the answer is informed.
     When a scan leaves subfolders with no files in them, the run ends by offering to delete those
     folders too; -PruneEmpty does it without asking. No directory is ever removed without one of
     those two - a plain run, and any -Force run without the switch, leaves every folder in place.
@@ -47,6 +58,11 @@
     Delete the subfolders the scan emptied, without asking. Interactive runs are asked after the
     sort instead; -Force never prompts, so this switch is how an unattended run prunes.
 
+.PARAMETER MoveProjects
+    Move the project folders whose contents belong in another category, without asking.
+    Interactive runs are asked after the preview instead; -Force never prompts, so this switch is
+    how an unattended run relocates a folder.
+
 .PARAMETER WhatIf
     Print the planned actions and exit without changing anything.
 
@@ -75,6 +91,11 @@
     .\organize-downloads.bat -MaxDepth 1
     Sort this folder and its immediate subfolders, leaving deeper trees alone.
 
+.EXAMPLE
+    .\organize-downloads.bat -MoveProjects -Force
+    Tidy the category folders and relocate any project folder that clearly belongs elsewhere,
+    without asking anything.
+
 .NOTES
     Windows PowerShell 5.1 built-ins only. No admin rights required.
 #>
@@ -86,6 +107,7 @@ param(
     [switch]$Recurse,
     [int]$MaxDepth = 0,
     [switch]$PruneEmpty,
+    [switch]$MoveProjects,
     [string]$LogFile,
     [string]$PreviewFile
 )
@@ -168,6 +190,15 @@ foreach ($cat in $Rules.Keys) {
 }
 $Categories = @($Rules.Keys) + @($Fallback)
 
+# Extensions that pin a project folder to Documents. Deliberately narrow: a readme.txt or a licence
+# file must not drag a tool folder out of Software, so text-ish formats are not in this list.
+$PinTypes = @('doc','docx','xls','xlsx','xlsm','ppt','pptx','ppsx','pdf','rtf')
+
+# Text-ish files neither pin a folder nor vote on where it belongs: a readme plus a help file must
+# not outvote the two executables a tool folder is actually made of. They are still routed to
+# Documents like any other file - this list only governs the project-folder decision.
+$WeakDocTypes = @('txt','md','log','csv','json','xml','html','htm','chm','ini')
+
 # ---------------------------------------------------------------- helpers
 # Hashing goes through .NET, not Get-FileHash: on this machine PSModulePath lists the PowerShell 7
 # module tree first, so Windows PowerShell 5.1 cannot autoload Microsoft.PowerShell.Utility and
@@ -213,6 +244,26 @@ function Format-CellTail([string]$text, [int]$width) {
     return ('...' + $text.Substring($text.Length - ($width - 3))).PadRight($width)
 }
 
+# The reason a row is not a plain move, as one line. Shared by the screen table and the export so
+# the two can never drift apart.
+function Get-NoteText($row) {
+    $item = $row.Item
+    if ($row.Act -eq 'MOVE FOLDER' -or $row.Act -eq 'RENAME FOLDER') {
+        $tail = Split-Path -Leaf $item.Target
+        if ($row.Act -eq 'RENAME FOLDER') {
+            return ('{0}\{1} ({2}) -> {3} (name clash, folder renamed)' -f $item.Rel, $item.Name, $item.Detail, $tail)
+        }
+        return ('{0}\{1} ({2}) -> {3}' -f $item.Rel, $item.Name, $item.Detail, $tail)
+    }
+    $where = if ($item.Rel -eq '.') { $row.Name } else { $item.Rel + '\' + $row.Name }
+    switch ($row.Act) {
+        'RENAME'    { return ('{0} -> {1} (name clash, different content)' -f $where, (Split-Path -Leaf $item.Target)) }
+        'DUPLICATE' { return ('{0} -> identical copy at {1}; this one is removed' -f $where, $item.Target) }
+        'LOCK'      { return ('{0} -> lock file, removed' -f $where) }
+    }
+    return $where
+}
+
 # A destination name that is free both on disk and in this run's plan.
 function Get-UniquePath([string]$dir, [string]$name, [hashtable]$Reserved) {
     $base = [System.IO.Path]::GetFileNameWithoutExtension($name)
@@ -255,6 +306,59 @@ function Get-ScanTargets([string]$Root, [int]$MaxDepth) {
     return @($found | Sort-Object Relative)
 }
 
+# A destination name that is free on disk and in this run's plan, for a FOLDER. Kept separate from
+# Get-UniquePath because a folder name may contain dots ("Aug & Jul'26.v2") and has no extension.
+function Get-UniqueFolder([string]$dir, [string]$name, [hashtable]$Reserved) {
+    $candidate = Join-Path $dir $name
+    $taken = (Test-Path -LiteralPath $candidate) -or ($null -ne $Reserved -and $Reserved.ContainsKey($candidate.ToLowerInvariant()))
+    if (-not $taken) { return $candidate }
+    $i = 2
+    do {
+        $candidate = Join-Path $dir ('{0} ({1})' -f $name, $i)
+        $taken = (Test-Path -LiteralPath $candidate) -or ($null -ne $Reserved -and $Reserved.ContainsKey($candidate.ToLowerInvariant()))
+        if (-not $taken) { return $candidate }
+        $i++
+    } while ($i -lt 1000)
+    return $candidate
+}
+
+# Project folders: the immediate subfolders of each category folder. Anything deeper is part of a
+# project, so it is never a candidate on its own.
+function Get-ProjectFolders([string]$Root) {
+    $out = New-Object System.Collections.ArrayList
+    foreach ($category in $Categories) {
+        $catDir = Join-Path $Root $category
+        if (-not (Test-Path -LiteralPath $catDir -PathType Container)) { continue }
+        foreach ($child in @(Get-ChildItem -LiteralPath $catDir -Directory -Force -ErrorAction SilentlyContinue)) {
+            if ($child.LinkType) { continue }
+            [void]$out.Add([pscustomobject]@{ Dir = $child.FullName; Name = $child.Name; Parent = $category })
+        }
+    }
+    return @($out | Sort-Object Parent, Name)
+}
+
+# What a project folder is made of, at any depth beneath it. In-progress downloads and OS clutter are
+# not evidence of anything, so they are not counted; a folder made only of those counts as empty.
+function Get-FolderComposition([string]$Folder) {
+    $counts = @{}
+    $total = 0
+    $pinned = $false
+    foreach ($file in @(Get-ChildItem -LiteralPath $Folder -File -Force -Recurse -ErrorAction SilentlyContinue)) {
+        if ($SkipNames -contains $file.Name.ToLowerInvariant()) { continue }
+        $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
+        if ($SkipExtensions -contains $ext) { continue }
+        if ($WeakDocTypes -contains $ext) { continue }
+        $category = if ($Map.ContainsKey($ext)) { $Map[$ext] } else { $Fallback }
+        if ($counts.ContainsKey($category)) { $counts[$category] = $counts[$category] + 1 }
+        else { $counts[$category] = 1 }
+        $total++
+        if ($PinTypes -contains $ext) { $pinned = $true }
+    }
+    $parts = @($counts.GetEnumerator() | Sort-Object -Property Value -Descending |
+               ForEach-Object { '{0} {1}' -f $_.Value, $_.Key.ToLowerInvariant() })
+    return [pscustomobject]@{ Total = $total; Counts = $counts; Pinned = $pinned; Summary = ($parts -join ', ') }
+}
+
 # ---------------------------------------------------------------- target
 Write-Host ''
 Write-Host "Organising: $Path" -ForegroundColor Cyan
@@ -295,18 +399,41 @@ elseif ($interactive -and $scanDirs.Count -gt 0) {
 }
 
 # ---------------------------------------------------------------- plan
+# ---------------------------------------------------------------- gather
+# Two levels by default: loose files at the root, then loose files sitting directly inside each
+# category folder. That second pass is what lets a screenshot left in Documents\ reach Pictures\.
+# Nothing is ever taken out of a folder that lives inside a category folder - that is a project.
 $entries = New-Object System.Collections.ArrayList
+$sweepCount = 0     # loose files found inside a category folder
+$inPlaceCount = 0   # ...of which these were already in the right one
+
 foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Force)) {
-    [void]$entries.Add([pscustomobject]@{ File = $file; Rel = '.' })
+    [void]$entries.Add([pscustomobject]@{ File = $file; Rel = '.'; InPlace = $false })
 }
+
+foreach ($category in $Categories) {
+    $catDir = Join-Path $Path $category
+    if (-not (Test-Path -LiteralPath $catDir -PathType Container)) { continue }
+    foreach ($file in @(Get-ChildItem -LiteralPath $catDir -File -Force -ErrorAction SilentlyContinue)) {
+        $sweepCount++
+        $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
+        $belongs = if ($Map.ContainsKey($ext)) { $Map[$ext] } else { $Fallback }
+        $inPlace = ($belongs -eq $category)
+        if ($inPlace) { $inPlaceCount++ }
+        [void]$entries.Add([pscustomobject]@{ File = $file; Rel = $category; InPlace = $inPlace })
+    }
+}
+
 if ($useSubfolders) {
     foreach ($dir in $scanDirs) {
         foreach ($file in @(Get-ChildItem -LiteralPath $dir.Dir -File -Force -ErrorAction SilentlyContinue)) {
-            [void]$entries.Add([pscustomobject]@{ File = $file; Rel = $dir.Relative })
+            [void]$entries.Add([pscustomobject]@{ File = $file; Rel = $dir.Relative; InPlace = $false })
         }
     }
 }
 $entries = @($entries | Sort-Object { $_.Rel }, { $_.File.Name })
+# The Source column earns its width as soon as anything comes from somewhere other than the root.
+$showSource = $useSubfolders -or ($sweepCount -gt 0)
 
 $plan    = New-Object System.Collections.ArrayList
 # Destinations claimed so far in this run: lower-cased path -> source file that will occupy it.
@@ -343,6 +470,9 @@ foreach ($entry in $entries) {
         })
         continue
     }
+
+    # Already filed correctly inside its own category folder: nothing to do, and no row to read.
+    if ($entry.InPlace) { continue }
 
     if ($Map.ContainsKey($ext)) { $category = $Map[$ext] } else { $category = $Fallback }
 
@@ -408,9 +538,56 @@ $toDup = @($plan | Where-Object { $_.Action -eq 'DUPLICATE' })
 $toLock = @($plan | Where-Object { $_.Action -eq 'LOCK-DELETE' })
 $toSkip = @($plan | Where-Object { $_.Action -eq 'SKIPS' })
 
-if ($plan.Count -eq 0) {
+# ---------------------------------------------------------------- project folders
+# A folder inside a category folder is a project: its insides are never touched, only the folder as
+# a whole can move. Documents win outright; otherwise the single largest category has to win
+# outright, so a folder that is evenly mixed stays exactly where it is.
+$folderPlan = New-Object System.Collections.ArrayList
+$reservedFolders = @{}
+
+foreach ($project in @(Get-ProjectFolders $Path)) {
+    $composition = Get-FolderComposition $project.Dir
+    if ($composition.Total -eq 0) { continue }
+
+    if ($composition.Pinned) {
+        $wanted = 'Documents'
+    }
+    else {
+        $wanted = $null
+        $bestCount = 0
+        $tied = $false
+        foreach ($category in $composition.Counts.Keys) {
+            $count = $composition.Counts[$category]
+            if ($count -gt $bestCount) { $wanted = $category; $bestCount = $count; $tied = $false }
+            elseif ($count -eq $bestCount) { $tied = $true }
+        }
+        if ($tied) { $wanted = $null }
+    }
+
+    if (-not $wanted) { continue }
+    if ($wanted -eq $project.Parent) { continue }
+
+    $destDir = Join-Path $Path $wanted
+    $dest = Get-UniqueFolder $destDir $project.Name $reservedFolders
+    $reservedFolders[$dest.ToLowerInvariant()] = $project.Dir
+    $action = if ((Split-Path -Leaf $dest) -eq $project.Name) { 'MOVE-FOLDER' } else { 'RENAME-FOLDER' }
+
+    [void]$folderPlan.Add([pscustomobject]@{
+        Action = $action
+        Name   = $project.Name
+        Source = $project.Dir
+        Target = $dest
+        Rel    = $project.Parent
+        Detail = $composition.Summary
+    })
+}
+
+if ($plan.Count -eq 0 -and $folderPlan.Count -eq 0) {
     if ($useSubfolders) {
         Write-Host 'Nothing to organise - no files found here or in the subfolders scanned.' -ForegroundColor Green
+    }
+    elseif ($sweepCount -gt 0) {
+        Write-Host 'Nothing to organise - everything is already filed, and no project folder belongs elsewhere.' -ForegroundColor Green
     }
     else {
         Write-Host 'Nothing to organise - no loose files at this folder''s root.' -ForegroundColor Green
@@ -452,6 +629,18 @@ foreach ($item in $plan) {
     })
 }
 
+# Project folders get a row each too: one whole-folder decision is worth seeing next to the files.
+foreach ($item in $folderPlan) {
+    [void]$rows.Add([pscustomobject]@{
+        Name = $item.Name
+        Src  = $item.Rel
+        Type = 'Folder'
+        Dest = (Split-Path -Leaf (Split-Path -Parent $item.Target))
+        Act  = if ($item.Action -eq 'RENAME-FOLDER') { 'RENAME FOLDER' } else { 'MOVE FOLDER' }
+        Item = $item
+    })
+}
+
 $idxWidth  = ([string]$rows.Count).Length
 $nameWidth = 9      # "File Name"
 $typeWidth = 9      # "File Type"
@@ -473,7 +662,7 @@ if ($srcWidth  -gt $SrcCap)  { $srcWidth  = $SrcCap }
 $gap = '  '
 $header = $gap + '#'.PadLeft($idxWidth) + $gap + 'File Name'.PadRight($nameWidth) + $gap
 $rule   = $gap + ('-' * $idxWidth) + $gap + ('-' * $nameWidth) + $gap
-if ($useSubfolders) {
+if ($showSource) {
     $header = $header + 'Source'.PadRight($srcWidth) + $gap
     $rule   = $rule + ('-' * $srcWidth) + $gap
 }
@@ -492,15 +681,17 @@ foreach ($row in $rows) {
     $shown++
 
     $colour = switch ($row.Act) {
-        'MOVE'      { 'Gray' }
-        'RENAME'    { 'Yellow' }
-        'DUPLICATE' { 'DarkYellow' }
-        'LOCK'      { 'DarkYellow' }
-        'SKIP'      { 'DarkGray' }
-        default     { 'Gray' }
+        'MOVE'          { 'Gray' }
+        'MOVE FOLDER'   { 'Magenta' }
+        'RENAME'        { 'Yellow' }
+        'RENAME FOLDER' { 'Yellow' }
+        'DUPLICATE'     { 'DarkYellow' }
+        'LOCK'          { 'DarkYellow' }
+        'SKIP'          { 'DarkGray' }
+        default         { 'Gray' }
     }
     $line = $gap + ([string]$index).PadLeft($idxWidth) + $gap + (Format-Cell $row.Name $nameWidth) + $gap
-    if ($useSubfolders) { $line = $line + (Format-CellTail $row.Src $srcWidth) + $gap }
+    if ($showSource) { $line = $line + (Format-CellTail $row.Src $srcWidth) + $gap }
     $line = $line + (Format-Cell $row.Type $typeWidth) + $gap +
             (Format-Cell $row.Dest $destWidth) + $gap +
             (Format-Cell $row.Act  $actWidth).TrimEnd()
@@ -511,7 +702,7 @@ if ($rows.Count -gt $shown) {
 }
 
 # Anything that is not a plain move keeps its real target and reason visible.
-$notes = @($rows | Where-Object { $_.Act -in @('RENAME', 'DUPLICATE', 'LOCK') })
+$notes = @($rows | Where-Object { $_.Act -in @('RENAME', 'DUPLICATE', 'LOCK', 'MOVE FOLDER', 'RENAME FOLDER') })
 if ($notes.Count -gt 0) {
     Write-Host ''
     Write-Host 'Notes' -ForegroundColor Cyan
@@ -523,20 +714,22 @@ if ($notes.Count -gt 0) {
             Write-Host ('  ... {0} more not listed' -f ($notes.Count - $noteCap)) -ForegroundColor DarkGray
             break
         }
-        $item = $row.Item
-        $where = if ($item.Rel -eq '.') { $row.Name } else { $item.Rel + '\' + $row.Name }
-        switch ($row.Act) {
-            'RENAME'    { $text = '{0} -> {1} (name clash, different content)' -f $where, (Split-Path -Leaf $item.Target) }
-            'DUPLICATE' { $text = '{0} -> identical copy at {1}; this one is removed' -f $where, $item.Target }
-            'LOCK'      { $text = '{0} -> lock file, removed' -f $where }
-        }
-        Write-Host ('  ' + $text) -ForegroundColor DarkGray
+        Write-Host ('  ' + (Get-NoteText $row)) -ForegroundColor DarkGray
     }
 }
 
+if ($inPlaceCount -gt 0) {
+    Write-Host ''
+    Write-Host ('Already filed: {0} file(s) inside category folders left alone.' -f $inPlaceCount) -ForegroundColor DarkGray
+}
+
 Write-Host ''
-Write-Host ('Summary: {0} move, {1} rename, {2} duplicate-remove, {3} lock-remove, {4} skip' -f `
-    $toMove.Count, $toRename.Count, $toDup.Count, $toLock.Count, $toSkip.Count)
+$summaryText = 'Summary: {0} move, {1} rename, {2} duplicate-remove, {3} lock-remove, {4} skip' -f `
+    $toMove.Count, $toRename.Count, $toDup.Count, $toLock.Count, $toSkip.Count
+if ($folderPlan.Count -gt 0) {
+    $summaryText = $summaryText + (', {0} folder move' -f $folderPlan.Count)
+}
+Write-Host $summaryText
 
 # ---------------------------------------------------------------- full-list export
 # The screen table is capped so a long plan stays readable. When it is truncated, every row is
@@ -562,7 +755,7 @@ if ($rows.Count -gt $shown) {
     $fIdxWidth = ([string]$rows.Count).Length
     $fHeader = $gap + '#'.PadLeft($fIdxWidth) + $gap + 'File Name'.PadRight($fNameWidth) + $gap
     $fRule   = $gap + ('-' * $fIdxWidth) + $gap + ('-' * $fNameWidth) + $gap
-    if ($useSubfolders) {
+    if ($showSource) {
         $fHeader = $fHeader + 'Source'.PadRight($fSrcWidth) + $gap
         $fRule   = $fRule + ('-' * $fSrcWidth) + $gap
     }
@@ -582,6 +775,12 @@ if ($rows.Count -gt $shown) {
         [void]$lines.Add('Subfolders : not scanned')
     }
     [void]$lines.Add(('Files      : {0}' -f $rows.Count))
+    if ($sweepCount -gt 0) {
+        [void]$lines.Add(('Categories : swept ({0} file(s), {1} already filed)' -f $sweepCount, $inPlaceCount))
+    }
+    if ($folderPlan.Count -gt 0) {
+        [void]$lines.Add(('Projects   : {0} folder move(s)' -f $folderPlan.Count))
+    }
     [void]$lines.Add('')
     [void]$lines.Add($fHeader)
     [void]$lines.Add($fRule)
@@ -590,7 +789,7 @@ if ($rows.Count -gt $shown) {
     foreach ($row in $rows) {
         $fileIndex++
         $line = $gap + ([string]$fileIndex).PadLeft($fIdxWidth) + $gap + (Format-Cell $row.Name $fNameWidth) + $gap
-        if ($useSubfolders) { $line = $line + (Format-CellTail $row.Src $fSrcWidth) + $gap }
+        if ($showSource) { $line = $line + (Format-CellTail $row.Src $fSrcWidth) + $gap }
         $line = $line + (Format-Cell $row.Type $fTypeWidth) + $gap +
                 (Format-Cell $row.Dest $fDestWidth) + $gap +
                 (Format-Cell $row.Act  $fActWidth).TrimEnd()
@@ -601,20 +800,21 @@ if ($rows.Count -gt $shown) {
         [void]$lines.Add('')
         [void]$lines.Add('Notes')
         foreach ($row in $notes) {
-            $item = $row.Item
-            $where = if ($item.Rel -eq '.') { $row.Name } else { $item.Rel + '\' + $row.Name }
-            switch ($row.Act) {
-                'RENAME'    { $text = '{0} -> {1} (name clash, different content)' -f $where, (Split-Path -Leaf $item.Target) }
-                'DUPLICATE' { $text = '{0} -> identical copy at {1}; this one is removed' -f $where, $item.Target }
-                'LOCK'      { $text = '{0} -> lock file, removed' -f $where }
-            }
-            [void]$lines.Add('  ' + $text)
+            [void]$lines.Add('  ' + (Get-NoteText $row))
         }
     }
 
+    $exportSummary = 'Summary: {0} move, {1} rename, {2} duplicate-remove, {3} lock-remove, {4} skip' -f `
+        $toMove.Count, $toRename.Count, $toDup.Count, $toLock.Count, $toSkip.Count
+    if ($inPlaceCount -gt 0) {
+        [void]$lines.Add('')
+        [void]$lines.Add(('Already filed: {0} file(s) inside category folders left alone.' -f $inPlaceCount))
+    }
+    if ($folderPlan.Count -gt 0) {
+        $exportSummary = $exportSummary + (', {0} folder move' -f $folderPlan.Count)
+    }
     [void]$lines.Add('')
-    [void]$lines.Add(('Summary: {0} move, {1} rename, {2} duplicate-remove, {3} lock-remove, {4} skip' -f `
-        $toMove.Count, $toRename.Count, $toDup.Count, $toLock.Count, $toSkip.Count))
+    [void]$lines.Add($exportSummary)
 
     try {
         $previewDir = Split-Path -Parent $PreviewFile
@@ -637,6 +837,33 @@ if ($previewWritten) {
 if ($WhatIf) {
     Write-Host 'Dry run (-WhatIf): nothing changed.' -ForegroundColor Cyan
     exit 0
+}
+
+# ---------------------------------------------------------------- project folder decision
+# Moving a whole folder is a bigger decision than moving one file, so it is asked on its own and
+# never folded into the Proceed answer below.
+$moveFolders = $false
+if ($folderPlan.Count -gt 0) {
+    if ($MoveProjects) {
+        $moveFolders = $true
+    }
+    elseif ($interactive) {
+        Write-Host ''
+        $folderQuestion = if ($folderPlan.Count -eq 1) {
+            'Move this project folder to its matching category? [y/N]'
+        }
+        else {
+            'Move these {0} project folders to their matching category? [y/N]' -f $folderPlan.Count
+        }
+        Write-Host $folderQuestion -ForegroundColor Yellow
+        $folderAnswer = Read-Host '[y/N]'
+        if ($folderAnswer -match '^(y|yes)$') { $moveFolders = $true }
+    }
+    if (-not $moveFolders) {
+        $folderHint = if ($interactive) { '' } else { ' Pass -MoveProjects to move them without asking.' }
+        Write-Host ('Project folders left in place.' + $folderHint) -ForegroundColor DarkGray
+    }
+    Write-Host ''
 }
 
 if (-not $Force) {
@@ -707,6 +934,37 @@ foreach ($item in $plan) {
 }
 
 Write-Host ''
+
+# ---------------------------------------------------------------- project folders
+# Whole folders, after the files, and only when the move was approved. The target is re-checked
+# immediately beforehand: a folder that appeared since the plan is never silently merged into.
+if ($folderPlan.Count -gt 0 -and $moveFolders) {
+    foreach ($item in $folderPlan) {
+        $label = '{0}\{1}' -f $item.Rel, $item.Name
+        try {
+            if (-not (Test-Path -LiteralPath $item.Source)) { continue }
+            if (Test-Path -LiteralPath $item.Target) {
+                Write-Log 'FOLDER-SKIPPED' ('{0} (target appeared: {1})' -f $label, $item.Target)
+                Write-Host ('  kept     {0} (target appeared)' -f $label) -ForegroundColor DarkGray
+                continue
+            }
+            $destDir = Split-Path -Parent $item.Target
+            if (-not (Test-Path -LiteralPath $destDir)) {
+                New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                Write-Log 'CREATED-FOLDER' $destDir
+            }
+            Move-Item -LiteralPath $item.Source -Destination $item.Target
+            $verb = if ($item.Action -eq 'RENAME-FOLDER') { 'RENAMED-FOLDER' } else { 'MOVED-FOLDER' }
+            Write-Log $verb ('{0} -> {1}\{2}' -f $label, (Split-Path -Leaf $destDir), (Split-Path -Leaf $item.Target))
+            Write-Host ('  moved    {0} -> {1}' -f $label, $item.Target) -ForegroundColor Magenta
+        }
+        catch {
+            $failures++
+            Write-Log 'ERROR' ('{0}: {1}' -f $label, $_.Exception.Message)
+            Write-Host ('  ERROR    {0}: {1}' -f $label, $_.Exception.Message) -ForegroundColor Red
+        }
+    }
+}
 
 # ---------------------------------------------------------------- emptied folders
 # The folders the scan left with nothing in them, counted at any depth beneath: a folder holding

@@ -23,6 +23,8 @@ Two conventions, so an entry is never read as more than it is:
 - Long plans gained a full-list export, so a 1000-row decision is never made from a 60-row screen.
 - A subfolder sort no longer leaves an empty skeleton behind: the run offers to delete the folders
   it emptied, and `-PruneEmpty` does that unattended.
+- A plain run also tidies the inside of the category folders, and treats a folder found there as a
+  project that moves whole — or not at all.
 
 ### Added
 
@@ -73,12 +75,34 @@ Two conventions, so an entry is never read as more than it is:
     duplicate note.
 - `-Path`, `-LogFile` and `-PreviewFile` overrides.
 
+- Two-level tidy in a plain run: loose files at the root, then loose files sitting directly inside
+  each category folder, so a screenshot left in `Documents\` reaches `Pictures\`. A file already
+  sitting in its own category folder is left alone without a row of its own, and the count of those
+  is reported instead.
+- Project folders: a folder inside a category folder is opaque and is only ever considered as a
+  whole. Real document types (`doc docx xls xlsx xlsm ppt pptx ppsx pdf rtf`) pin it to `Documents`;
+  otherwise the largest category among its files decides; a tie, an empty folder, or a folder made
+  only of text-ish files leaves it exactly where it is.
+  - Text-ish files (`txt md log csv json xml html htm chm ini`) neither pin nor vote, so a readme
+    plus a help file cannot drag a utility folder out of `Software`.
+  - The decision is asked separately from the file moves (`Move these N project folders ...?`,
+    default No); `-MoveProjects` does it unattended and `-Force` alone never moves a folder.
+  - A name clash at the destination renames the incoming folder `Sub3 (2)`; existing folders are
+    never merged into.
+  - Logged as `MOVED-FOLDER`, `RENAMED-FOLDER` or `FOLDER-SKIPPED`, and the target is re-checked
+    immediately before the move so a folder that appeared meanwhile is never silently absorbed.
+  - Verified against the worked example: `Sub1` (5 docx, 3 jpg, 1 xlsx) and `Sub2` (2 docx, 5 jpg,
+    1 xlsx) stay in `Documents`, `Sub3` (10 jpg) moves whole to `Pictures\Sub3`.
+
 ### Changed
 
 - Target resolution is now the launcher's own folder (`$ScriptDir`), never its parent. A copy placed
   in a subfolder sorts that subfolder.
 - A warning is printed when the target folder name is itself a category name, since its files would
   then be sorted into a nested category folder inside it.
+- `-Recurse` and `-MaxDepth` remain the way to flatten a tree *outside* the category folders; the
+  level-2 tidy is separate and never flattens a project. A category folder is still never
+  descended by the recursive scan.
 - The launcher window now stays open at the end and prints the exit code, so a double-click result
   can actually be read. `-Force` skips the pause for scheduled runs.
 - The console title reads `Folder Organization Script` rather than naming one specific folder, since

@@ -9,6 +9,8 @@ A pair of files: `organize-downloads.ps1` does the work, `organize-downloads.bat
 
 It is deliberately dumb about meaning. Routing is by file extension and nothing else, so anything it does not recognise goes to `Other\` for you to re-file by hand. It will not guess that four PDFs belong to one client.
 
+It tidies two levels, and only ever loose files: the root, and the inside of each category folder. A screenshot left behind in `Documents\` finds its way to `Pictures\`. A **folder** inside a category folder is treated as a project — nothing inside it is touched, and only the folder as a whole can be relocated, when its contents clearly belong somewhere else.
+
 ## Quick start
 
 1. Copy both files into the folder you want sorted.
@@ -42,6 +44,7 @@ Proceed? [y/N]
 | `-Recurse` | Also sort files found in subfolders, into this folder's category folders. |
 | `-MaxDepth N` | Limit the scan depth (immediate subfolders are depth 1). Implies `-Recurse`. |
 | `-PruneEmpty` | Delete the subfolders the scan emptied, without asking. Interactive runs are asked after sorting instead. |
+| `-MoveProjects` | Move the project folders whose contents belong in another category, without asking. Interactive runs are asked after the preview instead. |
 | `-Path <folder>` | Organise a different folder. Defaults to the launcher's own folder. |
 | `-LogFile <path>` | Override the action log. Defaults to `organize-log.txt` beside the scripts. |
 | `-PreviewFile <path>` | Override the long-plan report. Defaults to `organize-preview.txt` beside the log. |
@@ -73,12 +76,52 @@ These are implemented, not aspirational:
 
 - **Nothing is overwritten.** A name clash is resolved by comparing SHA256: identical bytes means the incoming copy is deleted and logged as `DUPLICATE`; different bytes means the incoming file is renamed `name (2).ext` and logged as `RENAMED`.
 - **Two files can never claim one destination** within a single run, including across subfolders. The same identical-or-rename rule applies.
-- **Directories are never moved, and only ever deleted with your explicit yes.** A subfolder scan reports the folders it emptied and offers to delete them at the end; nothing is removed without that answer or `-PruneEmpty`, and the target folder itself and every category folder are never candidates.
+- **Directories are never taken apart, and never deleted without a yes.** A project folder moves only as a whole, and only when you approve it; a subfolder scan reports the folders it emptied and offers to delete them; nothing is removed without that answer or `-PruneEmpty`, and the target folder itself and every category folder are never candidates.
+- **A project folder is opaque.** Nothing inside a folder that lives in a category folder is moved, renamed or deleted — not one file, at any depth. Only the folder itself can move.
 - **The tool never moves itself.** `organize-downloads.ps1`, `organize-downloads.bat`, `organize-log.txt` and `organize-preview.txt` are reported as `SKIP` and left where they are.
 - **Partial downloads are left alone** — `.crdownload`, `.part`, `.partial`, `.tmp`, `.download` — as are `desktop.ini` and `thumbs.db`.
 - **Only `~$` lock files are deleted**, which is what Office leaves behind when a document closes badly.
 - **A file already in its destination is never judged a duplicate of itself.**
 - **Every action is logged** with a timestamp, so a run can be unwound by hand from the log.
+
+## Category folders and project folders
+
+A plain run does two things, and nothing else:
+
+1. **Loose files at the root** are sorted into the category folders.
+2. **Loose files inside the category folders** are sorted out of them, so `Documents\screenshot.png` becomes `Pictures\screenshot.png`. A file already sitting in its own category folder is left alone without a row of its own.
+
+A folder inside a category folder is a **project**. Nothing inside it is ever touched — not one file, at any depth. The only thing the run will consider is moving the folder as a whole, and only when its contents clearly belong in another category:
+
+| What is in the folder | Where it belongs |
+|---|---|
+| Any real document type (`doc docx xls xlsx xlsm ppt pptx ppsx pdf rtf`) | `Documents` |
+| Otherwise, one category holds most of the files | that category |
+| Otherwise — a tie at the top | stays exactly where it is |
+| Empty, or nothing but text-ish files and in-progress downloads | stays |
+
+Text-ish files (`txt md log csv json xml html htm chm ini`) neither pin nor vote: a readme plus a help file must not drag a tool folder out of `Software`. Routed as individual files they still go to `Documents`.
+
+A real render, from the folder that prompted this rule:
+
+```
+Organising: C:\Users\you\Downloads\Unsorted
+
+  #  File Name  Source     File Type  Destination  Action
+  -  ---------  ---------  ---------  -----------  -----------
+  1  Sub3       Documents  Folder     Pictures     MOVE FOLDER
+
+Notes
+  Documents\Sub3 (10 pictures) -> Sub3
+
+Already filed: 1 file(s) inside category folders left alone.
+
+Summary: 0 move, 0 rename, 0 duplicate-remove, 0 lock-remove, 0 skip, 1 folder move
+```
+
+`Documents\Sub1` (5 docx, 3 jpg, 1 xlsx) and `Documents\Sub2` (2 docx, 5 jpg, 1 xlsx) both stay where they are — they hold documents — while `Sub3` (10 jpg) moves whole to `Pictures\Sub3`.
+
+Whole-folder moves are asked about separately from the file moves, because they are a bigger decision: `Move these 3 project folders to their matching category? [y/N]`, default No. `-MoveProjects` moves them without asking; `-Force` alone never moves one. A name clash at the destination renames the incoming folder to `Sub3 (2)` — nothing is ever merged.
 
 ## Subfolder scan
 
@@ -88,7 +131,7 @@ Off by default. `-Recurse` (or `-MaxDepth N`) files everything, at any depth, in
 Also sort the 1000 files inside 90 subfolders? Their folder structure is not preserved.
 ```
 
-- Folders named after a category are never descended, so an existing `Documents\` is left intact.
+- Folders named after a category are never descended by this scan, so an existing `Documents\` is never flattened — its loose files are tidied by the level-2 pass instead, and the folders inside it are left as projects.
 - Junctions and symbolic links are never followed.
 - `-WhatIf` and `-Force` never ask, so unattended runs stay deterministic and root-only unless the switch is passed.
 - Subfolders are reported when they are left with no files, and the run then asks once: `Delete these N empty subfolders? [y/N]`, defaulting to No.
@@ -113,7 +156,7 @@ The on-screen table caps at 60 rows so a long plan stays readable. Beyond that, 
 2026-11-06 10:59:38  SKIPPED          organize-downloads.ps1 (organiser file)
 ```
 
-Action verbs: `MOVED`, `RENAMED`, `DUPLICATE`, `LOCK-DELETED`, `SKIPPED`, `CREATED-FOLDER`, `PRUNED-FOLDER`, `PRUNE-SKIPPED`, `ERROR`. Scanned files carry their source folder in the log line, so a multi-folder run can be reconstructed from the log alone.
+Action verbs: `MOVED`, `RENAMED`, `DUPLICATE`, `LOCK-DELETED`, `SKIPPED`, `CREATED-FOLDER`, `MOVED-FOLDER`, `RENAMED-FOLDER`, `FOLDER-SKIPPED`, `PRUNED-FOLDER`, `PRUNE-SKIPPED`, `ERROR`. Scanned files carry their source folder in the log line, so a multi-folder run can be reconstructed from the log alone.
 
 Exit codes: `0` success or nothing to do, `1` an error occurred.
 
