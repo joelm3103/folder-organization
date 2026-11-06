@@ -126,6 +126,8 @@ organize-downloads.ps1   the tool
 organize-downloads.bat   double-click launcher
 README.md
 CHANGELOG.md
+.gitattributes          pins CRLF for the .bat and .ps1 on checkout
+.gitignore              keeps the runtime artefacts out of history
 ```
 
 `organize-log.txt` and `organize-preview.txt` are runtime artefacts and are git-ignored; they are created beside the scripts when a run happens.
