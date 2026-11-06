@@ -18,8 +18,10 @@
     A file leaves a subfolder however unknown it is: "unrecognised" is not a reason to stay, it is a
     reason to go to Other\. Nothing is retained inside a bucket.
 
-    Level one is buckets, level two is projects. A folder inside a bucket is a project: nothing inside
-    it is ever moved, renamed or deleted, and a root folder is never relocated. Where a project goes
+    Level one is buckets, level two is projects. A folder inside a bucket is a project: not one file
+    inside it is ever moved, renamed or deleted, and a root folder is never relocated. Empty
+    directories inside it are still offered for deletion with the rest - files are the promise, not
+    folders. Where a project goes
     depends on the bucket it was found in. Out of a category folder it is judged by its contents - real
     document types (doc, docx, xls, xlsx, ppt, pptx, ppsx, pdf, rtf) pin it to Documents, otherwise the
     single largest category decides, and a tie or a text-only folder leaves it where it is. Out of any
@@ -407,8 +409,16 @@ function Get-EmptyFolders([string]$Root, [string[]]$Departing) {
         # A top-level category folder is structure, not debris: it stays even when empty.
         if (($relative.IndexOf('\') -lt 0) -and ($Categories -contains $dir.Name)) { continue }
         # The same trees the sweep never enters are never judged either - an empty .git is not debris.
-        if ($dir.Name.StartsWith('.')) { continue }
-        if ($NeverSweep -contains $dir.Name.ToLowerInvariant()) { continue }
+        # Testing every segment, not just the leaf, so a candidate INSIDE a tooling tree is refused too:
+        # an empty .git\objects\tmp belongs to .git, and node_modules\pkg\dist belongs to node_modules.
+        $blocked = $false
+        foreach ($segment in $relative.Split('\')) {
+            if ($segment.StartsWith('.') -or ($NeverSweep -contains $segment.ToLowerInvariant())) {
+                $blocked = $true
+                break
+            }
+        }
+        if ($blocked) { continue }
         $remaining = 0
         foreach ($file in @(Get-ChildItem -LiteralPath $dir.FullName -File -Force -Recurse -ErrorAction SilentlyContinue)) {
             if (-not $gone.ContainsKey($file.FullName.ToLowerInvariant())) { $remaining++; break }
@@ -693,7 +703,8 @@ $scaffoldMissing = @($Categories | Sort-Object | Where-Object {
     -not (Test-Path -LiteralPath (Join-Path $Path $_) -PathType Container)
 })
 $departing = New-Object System.Collections.ArrayList
-foreach ($item in @($plan | Where-Object { $_.Action -in @('MOVE', 'RENAME', 'DUPLICATE') })) {
+# LOCK-DELETE is a departure too: a bucket holding nothing but a ~$ lock file is empty afterwards.
+foreach ($item in @($plan | Where-Object { $_.Action -in @('MOVE', 'RENAME', 'DUPLICATE', 'LOCK-DELETE') })) {
     [void]$departing.Add($item.Source)
 }
 # A folder that is about to leave takes everything in it, so its bucket counts as empty in the preview too.
@@ -1068,9 +1079,22 @@ foreach ($item in $plan) {
             }
 
             'DUPLICATE' {
-                Remove-Item -LiteralPath $item.Source -Force
-                Write-Log 'DUPLICATE' ('removed {0}; identical copy kept at {1}' -f $label, $item.Target)
-                Write-Host ('  dup-rm   {0}' -f $label) -ForegroundColor DarkYellow
+                # The hash was compared at planning time. Re-compare it now: a file edited between the
+                # preview and the move must not be deleted as a duplicate of the copy it no longer
+                # matches. Deleting is the only irreversible act here, so it is the one that re-proves.
+                if (-not (Test-Path -LiteralPath $item.Target)) {
+                    Write-Log 'DUPLICATE-SKIPPED' ('{0} (kept copy is gone: {1})' -f $label, $item.Target)
+                    Write-Host ('  kept     {0} (kept copy gone)' -f $label) -ForegroundColor Yellow
+                }
+                elseif ((Get-Hash $item.Source) -ne (Get-Hash $item.Target)) {
+                    Write-Log 'DUPLICATE-SKIPPED' ('{0} (no longer identical to {1})' -f $label, $item.Target)
+                    Write-Host ('  kept     {0} (no longer identical)' -f $label) -ForegroundColor Yellow
+                }
+                else {
+                    Remove-Item -LiteralPath $item.Source -Force
+                    Write-Log 'DUPLICATE' ('removed {0}; identical copy kept at {1}' -f $label, $item.Target)
+                    Write-Host ('  dup-rm   {0}' -f $label) -ForegroundColor DarkYellow
+                }
             }
 
             'LOCK-DELETE' {

@@ -75,10 +75,10 @@ The whole table lives in one ordered hashtable at the top of the `.ps1`. Edit it
 
 These are implemented, not aspirational:
 
-- **Nothing is overwritten.** A name clash is resolved by comparing SHA256: identical bytes means the incoming copy is deleted and logged as `DUPLICATE`; different bytes means the incoming file is renamed `name (2).ext` and logged as `RENAMED`.
+- **Nothing is overwritten.** A name clash is resolved by comparing SHA256: identical bytes means the incoming copy is deleted and logged as `DUPLICATE`; different bytes means the incoming file is renamed `name (2).ext` and logged as `RENAMED`. The hash is compared again at deletion time, so a file edited after the preview is kept and logged `DUPLICATE-SKIPPED` instead of being removed.
 - **Two files can never claim one destination** within a single run, including across subfolders. The same identical-or-rename rule applies.
 - **Directories are never taken apart, and never deleted without a yes.** A project folder moves only as a whole, and only when you approve it; empty folders are reported on every run and deleted only on your answer, or with `-PruneEmpty`. The target folder itself and the eight category folders are never candidates, and `-Force` alone never deletes anything.
-- **A project folder is opaque.** Nothing inside a folder that lives in a bucket is moved, renamed or deleted — not one file, at any depth, and a root folder is never relocated. The folder itself moves to `Projects\` as one piece, keeping its bucket (`Projects\Work\Clients`), so two unrelated folders called `Scripts` stay apart instead of becoming `Scripts` and `Scripts (2)`.
+- **A project folder is opaque to files.** Not one file inside a folder that lives in a bucket is moved, renamed or deleted, at any depth, and a root folder is never relocated. Empty *directories* inside it are still fair game for the delete question — say No if a project's skeleton matters to you. The folder itself moves to `Projects\` as one piece, keeping its bucket (`Projects\Work\Clients`), so two unrelated folders called `Scripts` stay apart instead of becoming `Scripts` and `Scripts (2)`.
 - **Unknown files are not special.** A `.dwg`, a `.py` or a `.bak` has no better home than `Other\`, and that is where it goes — the same rule as a screenshot. `Other\` is a category, not a scrap heap you have to sort out.
 - **Tooling folders are never entered** — dotted names, `node_modules`, `__pycache__`, `System Volume Information`, `$RECYCLE.BIN` — and neither are junctions or symbolic links.
 - **The tool never moves itself.** `organize-downloads.ps1`, `organize-downloads.bat`, `organize-log.txt` and `organize-preview.txt` are reported as `SKIP` and left where they are.
@@ -161,6 +161,7 @@ Delete these 3 empty folders? [y/N]
 - Candidates are evaluated *after* the moves, so a bucket that handed over its files is judged empty and a folder that has since gained a file is not.
 - Never candidates: the target folder itself, the eight category folders (they are structure, not debris), dotted folders, tooling trees, and any link.
 - Deepest first, so a parent that held only emptied children goes too. Each folder is re-checked immediately before the delete — anything that appeared is kept and logged `PRUNE-SKIPPED`.
+- A file arriving in the instant between that check and the removal makes the removal *fail*, never the file disappear: `Remove-Item` runs without `-Recurse`, so a directory that holds anything cannot be taken.
 - `Remove-Item` is used without `-Recurse`, so a directory that still holds anything cannot be removed even if that check were bypassed.
 - `-Force` never prunes; `-Force -PruneEmpty` prunes without asking.
 
