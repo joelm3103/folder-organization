@@ -135,6 +135,10 @@ Two conventions, so an entry is never read as more than it is:
   like every other file. `Mobile VPN\`'s certificates, `Sync Configs\` shortcuts and an `Others\` `.ps1`
   all move to `Other\`; the buckets are then empty and become deletion candidates. Reverses the rule
   added earlier the same day, deliberately: `Other\` is a category, not a scrap heap.
+- The help text and the README no longer claim a project folder is wholly untouched: pruning has always
+  reached inside one, so the promise is now stated as files — not one file is moved, renamed or
+  deleted there — with empty directories named as the exception. A first real run proved the point by
+  pruning five empty folders inside `Projects\Others\ADQRCODEV2TEST`.
 - A project found inside a category bucket is still judged by its contents (`Documents\Sub3` with 10 jpg
   moves to `Pictures\Sub3`, a folder pinned by document types goes to `Documents`, a tie stays), while a
   project found inside any other bucket goes to `Projects\<bucket>\` regardless of contents. Two rules,
@@ -158,6 +162,24 @@ Two conventions, so an entry is never read as more than it is:
   can actually be read. `-Force` skips the pause for scheduled runs.
 - The console title reads `Folder Organization Script` rather than naming one specific folder, since
   the launcher is reused elsewhere.
+
+### Fixed
+- **Pruning looked inside tooling trees.** The empty-folder walk refused a candidate whose own name was
+  in the skip list or started with a dot, but still enumerated its children — so an empty
+  `bucket\.git\objects\tmp` was offered for deletion even though `.git` is never entered. Every path segment
+  is now checked, not just the leaf, so a candidate inside a protected tree is refused too. Verified on a
+  project holding `.git\objects\empty` and `node_modules\pkg\dist`: three genuine empties were pruned, both
+  tooling trees survived.
+- **A duplicate was deleted on a hash compared before the prompt.** The identical-bytes decision was made
+  at planning time, then the file was removed minutes later without re-checking. A file edited while the
+  preview sat on screen would have been deleted as a copy of something it no longer matched. The hash is
+  now compared again immediately before the removal, and a mismatch keeps the file and logs
+  `DUPLICATE-SKIPPED`. Verified by fault injection — a scripted edit to the source between planning and
+  execution left the file in place with the log line `no longer identical to ...`.
+- **The preview missed buckets emptied only by a lock file.** A `~$` file is deleted on execution, but
+  its path was not counted as departing, so a bucket holding nothing else was not predicted empty. Added
+  to the departing set; a bucket with one lock file and one stale document now reports `Empty folders
+  after this run: 1`.
 
 ### Fixed
 
