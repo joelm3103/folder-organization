@@ -9,17 +9,25 @@
     The folder it organises is the folder it lives in - drop this script and its .bat into the
     folder you want sorted and run it there. -Path overrides that.
 
-    By default only loose files are touched, at two levels: files sitting directly in the folder,
-    and files sitting directly inside each of its category folders. That second pass is what lets a
-    screenshot left behind in Documents\ find its way to Pictures\. A file already sitting in its
-    own category folder is left alone without being listed.
+    By default only loose files are touched, at two levels: files sitting directly in the folder, and
+    files sitting directly inside each of its subfolders - every subfolder, category or not. That is
+    what lets a screenshot left in Documents\ reach Pictures\, and the sixteen loose images in a
+    Media Assets\ folder reach Pictures\ too. A file already sitting in its own category folder is
+    left alone without being listed.
 
-    A folder inside a category folder is treated as a project: nothing inside it is ever moved or
-    deleted. Only the folder as a whole can move, and only when its contents clearly belong
-    elsewhere. Real document types (doc, docx, xls, xlsx, ppt, pptx, ppsx, pdf, rtf) pin the folder
-    to Documents; otherwise the single largest category among its files decides, and a tie leaves
-    the folder where it is. Interactive runs are asked before any folder moves; -MoveProjects does
-    it unattended, and -Force alone never moves one.
+    A file only leaves a subfolder that is not a category when the tool knows what it is. Category
+    folders are machine-owned, so a stray file inside them is routed in full, Other\ included. Any
+    other subfolder belongs to you: its recognised files are filed out, and anything that would land
+    in Other\ is left where it is and reported at the end, so you can decide whether to move it by
+    hand. Mobile VPN\ therefore keeps its certificates, and Sync Configs\ its shortcuts.
+
+    A folder inside a subfolder is treated as a project: nothing inside it is ever moved or deleted,
+    and a root folder is never relocated. Only the children of a category folder are considered for
+    a whole-folder move, and only when the contents clearly belong elsewhere. Real document types
+    (doc, docx, xls, xlsx, ppt, pptx, ppsx, pdf, rtf) pin such a folder to Documents; otherwise the
+    single largest category among its files decides, and a tie leaves the folder where it is.
+    Interactive runs are asked before any folder moves; -MoveProjects does it unattended, and -Force
+    alone never moves one.
 
     -Recurse (or -MaxDepth N) additionally scans subfolders outside the category folders and files
     everything into the top-level category folders; that structure is NOT preserved. This is the only
@@ -267,6 +275,26 @@ function Get-NoteText($row) {
     return $where
 }
 
+# The files the sweep deliberately walked past, grouped by the folder that keeps them. This is the
+# part a person acts on by hand, so it is shown on screen (capped) and in full in the exported report.
+function Show-RetainedReport($retained) {
+    if ($retained.Count -eq 0) { return }
+    Write-Host ''
+    Write-Host ('Retained in place - not recognised, so their folder keeps them: {0}' -f $retained.Count) -ForegroundColor DarkYellow
+    $nameCap = 6
+    foreach ($group in @($retained | Group-Object Rel | Sort-Object Name)) {
+        $names = @($group.Group | ForEach-Object { $_.File.Name })
+        $line = '  {0,-16} {1,4}  ' -f $group.Name, $names.Count
+        if ($names.Count -gt $nameCap) {
+            $line = $line + ($names[0..($nameCap - 1)] -join ', ') + ('  ... {0} more' -f ($names.Count - $nameCap))
+        }
+        else {
+            $line = $line + ($names -join ', ')
+        }
+        Write-Host $line -ForegroundColor DarkGray
+    }
+}
+
 # A destination name that is free both on disk and in this run's plan.
 function Get-UniquePath([string]$dir, [string]$name, [hashtable]$Reserved) {
     $base = [System.IO.Path]::GetFileNameWithoutExtension($name)
@@ -396,38 +424,67 @@ if ($explicitScan) {
 # category folder. That second pass is what lets a screenshot left in Documents\ reach Pictures\.
 # Nothing is ever taken out of a folder that lives inside a category folder - that is a project.
 $entries = New-Object System.Collections.ArrayList
-$sweepCount = 0     # loose files found inside a category folder
-$inPlaceCount = 0   # ...of which these were already in the right one
+$sweepFiles = 0     # loose files found directly inside an immediate subfolder
+$sweptFolders = 0   # ...in this many folders
+$inPlaceCount = 0   # ...of which these were already in the right category folder
 
 foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Force)) {
-    [void]$entries.Add([pscustomobject]@{ File = $file; Rel = '.'; InPlace = $false })
+    [void]$entries.Add([pscustomobject]@{ File = $file; Rel = '.'; InPlace = $false; Bucket = $null; IsCategory = $false })
 }
 
-foreach ($category in $Categories) {
-    $catDir = Join-Path $Path $category
-    if (-not (Test-Path -LiteralPath $catDir -PathType Container)) { continue }
-    foreach ($file in @(Get-ChildItem -LiteralPath $catDir -File -Force -ErrorAction SilentlyContinue)) {
-        $sweepCount++
+# Every immediate subfolder is a bucket, category or not: a loose screenshot in Media Assets needs the
+# same treatment as one left in Documents. A bucket named after a category is machine-owned, so it is
+# swept in full; any other bucket is the user's, so only files the tool recognises leave it (see the
+# retained branch in the plan pass). Never entered: links, dotted folders and tooling trees.
+# Only when the scan is not recursive: -Recurse walks these same folders itself, and enumerating them
+# twice would turn every depth-1 file into a duplicate of itself.
+$NeverSweep = @('node_modules', '__pycache__', 'system volume information', '$recycle.bin', '.git', '.svn')
+
+$bucketDirs = if ($useSubfolders) {
+    @()
+}
+else {
+    @(Get-ChildItem -LiteralPath $Path -Directory -Force -ErrorAction SilentlyContinue | Sort-Object Name)
+}
+
+foreach ($dir in $bucketDirs) {
+    if ($dir.LinkType) { continue }
+    if ($dir.Name.StartsWith('.')) { continue }
+    if ($NeverSweep -contains $dir.Name.ToLowerInvariant()) { continue }
+
+    $isCategory = $Categories -contains $dir.Name
+    $sweptFolders++
+
+    foreach ($file in @(Get-ChildItem -LiteralPath $dir.FullName -File -Force -ErrorAction SilentlyContinue)) {
+        $sweepFiles++
         $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
         $belongs = if ($Map.ContainsKey($ext)) { $Map[$ext] } else { $Fallback }
-        $inPlace = ($belongs -eq $category)
+        # Only a category folder can hold a file that is already where it belongs. Media Assets\a.pdf is
+        # not "already filed" just because the name matched - it still belongs in Documents.
+        $inPlace = $isCategory -and ($belongs -eq $dir.Name)
         if ($inPlace) { $inPlaceCount++ }
-        [void]$entries.Add([pscustomobject]@{ File = $file; Rel = $category; InPlace = $inPlace })
+        [void]$entries.Add([pscustomobject]@{
+            File = $file; Rel = $dir.Name; InPlace = $inPlace; Bucket = $dir.Name; IsCategory = $isCategory
+        })
     }
 }
 
 if ($useSubfolders) {
     foreach ($dir in $scanDirs) {
         foreach ($file in @(Get-ChildItem -LiteralPath $dir.Dir -File -Force -ErrorAction SilentlyContinue)) {
-            [void]$entries.Add([pscustomobject]@{ File = $file; Rel = $dir.Relative; InPlace = $false })
+            [void]$entries.Add([pscustomobject]@{
+                File = $file; Rel = $dir.Relative; InPlace = $false; Bucket = $null; IsCategory = $false
+            })
         }
     }
 }
 $entries = @($entries | Sort-Object { $_.Rel }, { $_.File.Name })
 # The Source column earns its width as soon as anything comes from somewhere other than the root.
-$showSource = $useSubfolders -or ($sweepCount -gt 0)
+$showSource = $useSubfolders -or ($sweepFiles -gt 0)
 
 $plan    = New-Object System.Collections.ArrayList
+# Files left where they are because the tool could not classify them: reported, never moved.
+$retained = New-Object System.Collections.ArrayList
 # Destinations claimed so far in this run: lower-cased path -> source file that will occupy it.
 $planned = @{}
 
@@ -467,6 +524,14 @@ foreach ($entry in $entries) {
     if ($entry.InPlace) { continue }
 
     if ($Map.ContainsKey($ext)) { $category = $Map[$ext] } else { $category = $Fallback }
+
+    # A file only leaves a folder that is not machine-owned when the tool knows where it belongs. The
+    # fallback bucket means "unknown", and an unknown file is better left in the folder that holds it -
+    # it is reported instead, so it can be moved by hand if that is what you want.
+    if ($entry.Bucket -and -not $entry.IsCategory -and $category -eq $Fallback) {
+        [void]$retained.Add([pscustomobject]@{ File = $file; Rel = $entry.Rel })
+        continue
+    }
 
     $destDir  = Join-Path $Path $category
     $destPath = Join-Path $destDir $file.Name
@@ -575,10 +640,17 @@ foreach ($project in @(Get-ProjectFolders $Path)) {
 }
 
 if ($plan.Count -eq 0 -and $folderPlan.Count -eq 0) {
+    if ($retained.Count -gt 0) {
+        # Nothing to do, but there is something to read: say what was kept and why, then stop.
+        Show-RetainedReport $retained
+        Write-Host ''
+        Write-Host 'Nothing to organise - none of the files found are recognised, so they stayed put.' -ForegroundColor Green
+        exit 0
+    }
     if ($useSubfolders) {
         Write-Host 'Nothing to organise - no files found here or in the subfolders scanned.' -ForegroundColor Green
     }
-    elseif ($sweepCount -gt 0) {
+    elseif ($sweepFiles -gt 0) {
         Write-Host 'Nothing to organise - everything is already filed, and no project folder belongs elsewhere.' -ForegroundColor Green
     }
     else {
@@ -710,6 +782,8 @@ if ($notes.Count -gt 0) {
     }
 }
 
+Show-RetainedReport $retained
+
 if ($inPlaceCount -gt 0) {
     Write-Host ''
     Write-Host ('Already filed: {0} file(s) inside category folders left alone.' -f $inPlaceCount) -ForegroundColor DarkGray
@@ -767,8 +841,11 @@ if ($rows.Count -gt $shown) {
         [void]$lines.Add('Subfolders : not scanned')
     }
     [void]$lines.Add(('Files      : {0}' -f $rows.Count))
-    if ($sweepCount -gt 0) {
-        [void]$lines.Add(('Categories : swept ({0} file(s), {1} already filed)' -f $sweepCount, $inPlaceCount))
+    if ($sweptFolders -gt 0) {
+        [void]$lines.Add(('Buckets    : {0} folder(s) swept, {1} file(s), {2} already in place' -f $sweptFolders, $sweepFiles, $inPlaceCount))
+    }
+    if ($retained.Count -gt 0) {
+        [void]$lines.Add(('Retained   : {0} file(s) left in place (destination would be Other)' -f $retained.Count))
     }
     if ($folderPlan.Count -gt 0) {
         [void]$lines.Add(('Projects   : {0} folder move(s)' -f $folderPlan.Count))
@@ -793,6 +870,14 @@ if ($rows.Count -gt $shown) {
         [void]$lines.Add('Notes')
         foreach ($row in $notes) {
             [void]$lines.Add('  ' + (Get-NoteText $row))
+        }
+    }
+
+    if ($retained.Count -gt 0) {
+        [void]$lines.Add('')
+        [void]$lines.Add('Retained in place (not recognised, destination would be Other):')
+        foreach ($group in @($retained | Group-Object Rel | Sort-Object Name)) {
+            [void]$lines.Add(('  {0} ({1}): {2}' -f $group.Name, $group.Count, (@($group.Group | ForEach-Object { $_.File.Name }) -join ', ')))
         }
     }
 
@@ -873,6 +958,17 @@ if (-not $Force) {
 
 # ---------------------------------------------------------------- execute
 $failures = 0
+
+# One line records what the sweep deliberately walked past, so the decision is auditable later.
+if ($retained.Count -gt 0) {
+    try {
+        $retainedSummary = @($retained | Group-Object Rel | Sort-Object Name |
+                            ForEach-Object { '{0} ({1})' -f $_.Name, $_.Count }) -join ', '
+        Write-Log 'RETAINED' ('{0} file(s) left in place (destination would be {1}): {2}' -f `
+                   $retained.Count, $Fallback, $retainedSummary)
+    }
+    catch { }
+}
 
 # A scanned file is logged with its source folder so a multi-folder run can be reconstructed.
 function Get-Label($item) {

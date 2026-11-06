@@ -9,7 +9,7 @@ A pair of files: `organize-downloads.ps1` does the work, `organize-downloads.bat
 
 It is deliberately dumb about meaning. Routing is by file extension and nothing else, so anything it does not recognise goes to `Other\` for you to re-file by hand. It will not guess that four PDFs belong to one client.
 
-It tidies two levels, and only ever loose files: the root, and the inside of each category folder. A screenshot left behind in `Documents\` finds its way to `Pictures\`. A **folder** inside a category folder is treated as a project — nothing inside it is touched, and only the folder as a whole can be relocated, when its contents clearly belong somewhere else.
+It tidies two levels, and only ever loose files: the root, and the inside of **every** subfolder. A screenshot left behind in `Documents\` finds its way to `Pictures\`, and the sixteen loose images in a `Media Assets\` folder reach `Pictures\` too. A file only leaves a subfolder that is not a category when the tool knows what it is — anything unrecognised stays put and is reported. A **folder** inside a subfolder is a project: nothing inside it is touched, and only the children of a category folder can ever be relocated as a whole.
 
 ## Quick start
 
@@ -77,7 +77,9 @@ These are implemented, not aspirational:
 - **Nothing is overwritten.** A name clash is resolved by comparing SHA256: identical bytes means the incoming copy is deleted and logged as `DUPLICATE`; different bytes means the incoming file is renamed `name (2).ext` and logged as `RENAMED`.
 - **Two files can never claim one destination** within a single run, including across subfolders. The same identical-or-rename rule applies.
 - **Directories are never taken apart, and never deleted without a yes.** A project folder moves only as a whole, and only when you approve it; a subfolder scan reports the folders it emptied and offers to delete them; nothing is removed without that answer or `-PruneEmpty`, and the target folder itself and every category folder are never candidates.
-- **A project folder is opaque.** Nothing inside a folder that lives in a category folder is moved, renamed or deleted — not one file, at any depth. Only the folder itself can move.
+- **A project folder is opaque.** Nothing inside a folder that lives in a subfolder is moved, renamed or deleted — not one file, at any depth. A root folder is never relocated, and only the children of a category folder can move as a whole.
+- **Unknown files are never dragged out of your folders.** If the only destination would be the `Other\` bucket, the file stays where it is and is reported.
+- **Tooling folders are never entered** — dotted names, `node_modules`, `__pycache__`, `System Volume Information`, `$RECYCLE.BIN` — and neither are junctions or symbolic links.
 - **The tool never moves itself.** `organize-downloads.ps1`, `organize-downloads.bat`, `organize-log.txt` and `organize-preview.txt` are reported as `SKIP` and left where they are.
 - **Partial downloads are left alone** — `.crdownload`, `.part`, `.partial`, `.tmp`, `.download` — as are `desktop.ini` and `thumbs.db`.
 - **No input is a no.** Every confirmation is cast to a string and trimmed before it is tested, so an absent, blank or unrecognised answer aborts. `Read-Host` returns `$null` at end of input and `$null -notmatch 'pattern'` evaluates to nothing rather than `$true`, which once let a run with no input available proceed and move files.
@@ -85,14 +87,35 @@ These are implemented, not aspirational:
 - **A file already in its destination is never judged a duplicate of itself.**
 - **Every action is logged** with a timestamp, so a run can be unwound by hand from the log.
 
-## Category folders and project folders
+## Buckets, and what is left alone
 
 A plain run does two things, and nothing else:
 
 1. **Loose files at the root** are sorted into the category folders.
-2. **Loose files inside the category folders** are sorted out of them, so `Documents\screenshot.png` becomes `Pictures\screenshot.png`. A file already sitting in its own category folder is left alone without a row of its own.
+2. **Loose files inside every immediate subfolder** are sorted out of them, so `Documents\screenshot.png` becomes `Pictures\screenshot.png` and `Media Assets\background.jpg` becomes `Pictures\background.jpg`. A file already sitting in its own category folder is left alone without a row of its own.
 
-A folder inside a category folder is a **project**. Nothing inside it is ever touched — not one file, at any depth. The only thing the run will consider is moving the folder as a whole, and only when its contents clearly belong in another category:
+A file only leaves a subfolder when the tool knows where it belongs. Category folders are machine-owned and are routed in full, `Other\` included. Every other subfolder belongs to you:
+
+| A file sitting in a subfolder that is not a category | Result |
+|---|---|
+| Images, documents, archives, installers, media — anything with a known home | filed into that category at the root |
+| Anything unrecognised, whose only home is `Other\` | **kept in place**, listed under `Retained in place` |
+| A file already in the category it belongs to | left alone, not listed |
+
+That is why `Mobile VPN\` keeps its certificates, `.ovpn` and `MD5SUM`, and `Sync Configs\` keeps its four shortcuts: the tool cannot classify them, so their folder keeps them. They are reported rather than silently skipped, so you can move any by hand:
+
+```
+Retained in place - not recognised, so their folder keeps them: 14
+  Mobile VPN          8  ca.crt, client.crt, client.ovpn, client.pem, client.wgssl, MD5SUM  ... 2 more
+  Others              2  Copy-Icons-Logon.ps1, gpresult.bat
+  Sync Configs        4  Clients_Desktop-HomeFolder.ffs_gui.lnk, ... 3 more
+```
+
+The console block caps at six names per folder; the complete list is in the exported report, and one `RETAINED` line goes to the log.
+
+### Project folders
+
+A folder **inside** a subfolder is a project: nothing in it is moved, renamed or deleted, at any depth. A root folder is never relocated. Only the children of a category folder are offered as whole-folder moves, and only when the contents clearly belong elsewhere:
 
 | What is in the folder | Where it belongs |
 |---|---|
@@ -102,8 +125,6 @@ A folder inside a category folder is a **project**. Nothing inside it is ever to
 | Empty, or nothing but text-ish files and in-progress downloads | stays |
 
 Text-ish files (`txt md log csv json xml html htm chm ini`) neither pin nor vote: a readme plus a help file must not drag a tool folder out of `Software`. Routed as individual files they still go to `Documents`.
-
-A real render, from the folder that prompted this rule:
 
 ```
 Organising: C:\Users\you\Downloads\Unsorted

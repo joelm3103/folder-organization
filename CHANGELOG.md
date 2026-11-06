@@ -26,6 +26,19 @@ Two conventions, so an entry is never read as more than it is:
 - A plain run also tidies the inside of the category folders, and treats a folder found there as a
   project that moves whole — or not at all.
 
+- The level-1 sweep now covers **every immediate subfolder**, not only folders named after a category, so
+  loose files in `Media Assets\`, `Work\` or `Others\` are filed instead of ignored. On a live staging
+  folder that turned 1 move into 20 without touching the internal structure of a single project.
+- A file only leaves a subfolder that is not a category when the tool knows where it belongs: if the
+  routed destination would be the fallback `Other\`, the file stays and is reported. `Mobile VPN\` keeps
+  its certificates and `Sync Configs\` its shortcuts; `Media Assets\` loses its 16 images to `Pictures\`.
+- `Retained in place` report: a capped console block grouped by folder (count plus up to six names), the
+  complete list in the exported preview file, and one `RETAINED` log line naming folders and counts. A
+  folder holding nothing but unrecognised files reports them and stops instead of claiming there was
+  nothing to organise.
+- Tooling folders are never swept: dotted names, `node_modules`, `__pycache__`, `System Volume
+  Information`, `$RECYCLE.BIN`, and anything reporting a `LinkType` (junctions, symlinks, OneDrive).
+
 ### Added
 
 - `organize-downloads.ps1` and `organize-downloads.bat`: extension-based sorting into `Archives`,
@@ -99,6 +112,13 @@ Two conventions, so an entry is never read as more than it is:
   to stop: a folder in the tree is a project, and a project is not entered. `-Recurse` / `-MaxDepth`
   are now the only route, typed deliberately. Side effect: a plain run walks no directories at all,
   and the prompt sequence is down to one question.
+- A root folder is never relocated. Whole-folder moves stay limited to the children of category folders, so
+  `Media Assets` cannot be swept into `Pictures` as a folder just because it happens to hold images.
+- The sweep is skipped entirely under `-Recurse`, which walks those same folders itself; enumerating them
+  both ways made every depth-1 file a duplicate of itself.
+- The export header now reads `Buckets : N folder(s) swept, M file(s), K already in place` plus
+  `Retained : R file(s)`, replacing the category-only line.
+
 ### Changed
 
 - Target resolution is now the launcher's own folder (`$ScriptDir`), never its parent. A copy placed
