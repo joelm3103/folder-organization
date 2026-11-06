@@ -13,6 +13,9 @@
     category contents, never a directory. -Recurse (or -MaxDepth N) also scans subfolders and files
     everything into the top-level category folders; the subfolder structure is NOT preserved.
     Interactive runs are asked first, with the file and folder counts, so the answer is informed.
+    When a scan leaves subfolders with no files in them, the run ends by offering to delete those
+    folders too; -PruneEmpty does it without asking. No directory is ever removed without one of
+    those two - a plain run, and any -Force run without the switch, leaves every folder in place.
 
     When the plan is longer than the on-screen table (60 rows), the complete list is written to
     organize-preview.txt before the confirmation prompt, so every row - and every rename, duplicate
@@ -39,6 +42,10 @@
 
 .PARAMETER MaxDepth
     Limit how deep the scan goes, counting immediate subfolders as depth 1. Implies -Recurse.
+
+.PARAMETER PruneEmpty
+    Delete the subfolders the scan emptied, without asking. Interactive runs are asked after the
+    sort instead; -Force never prompts, so this switch is how an unattended run prunes.
 
 .PARAMETER WhatIf
     Print the planned actions and exit without changing anything.
@@ -78,6 +85,7 @@ param(
     [switch]$Force,
     [switch]$Recurse,
     [int]$MaxDepth = 0,
+    [switch]$PruneEmpty,
     [string]$LogFile,
     [string]$PreviewFile
 )
@@ -700,18 +708,70 @@ foreach ($item in $plan) {
 
 Write-Host ''
 
-# Subfolders are never deleted; just say which ones no longer hold any files at all, counting what
-# is nested beneath them (a folder holding only a category folder with content is not empty).
+# ---------------------------------------------------------------- emptied folders
+# The folders the scan left with nothing in them, counted at any depth beneath: a folder holding
+# only a category folder that still has content is not empty. Never the target itself, never a
+# category folder (the scan does not visit those), never a link.
+$emptied = @()
 if ($useSubfolders) {
-    $emptied = @()
     foreach ($dir in $scanDirs) {
         if (-not (Test-Path -LiteralPath $dir.Dir)) { continue }
         $remaining = @(Get-ChildItem -LiteralPath $dir.Dir -File -Force -Recurse -ErrorAction SilentlyContinue).Count
-        if ($remaining -eq 0) { $emptied += $dir.Relative }
+        if ($remaining -eq 0) { $emptied += $dir }
     }
-    if ($emptied.Count -gt 0) {
-        $sample = ($emptied | Select-Object -First 3) -join ', '
-        Write-Host ('Subfolders with no files left: {0} ({1}{2})' -f $emptied.Count, $sample, $(if ($emptied.Count -gt 3) { ', ...' } else { '' })) -ForegroundColor DarkGray
+}
+
+if ($emptied.Count -gt 0) {
+    $sample = (@($emptied | Select-Object -First 3) | ForEach-Object { $_.Relative }) -join ', '
+    Write-Host ('Subfolders with no files left: {0} ({1}{2})' -f $emptied.Count, $sample, $(if ($emptied.Count -gt 3) { ', ...' } else { '' })) -ForegroundColor DarkGray
+}
+
+# Removing directories is a separate, visible decision from the moves already approved, so it is
+# asked here rather than folded into the sort - and never asked by an unattended run.
+if ($emptied.Count -gt 0 -and (-not $WhatIf)) {
+
+    $prune = $false
+    if ($PruneEmpty) {
+        $prune = $true
+    }
+    elseif ($interactive) {
+        Write-Host ''
+        Write-Host ('Delete these {0} empty subfolders? [y/N]' -f $emptied.Count) -ForegroundColor Yellow
+        $pruneAnswer = Read-Host '[y/N]'
+        if ($pruneAnswer -match '^(y|yes)$') { $prune = $true }
+    }
+
+    if ($prune) {
+        # Deepest first, so a parent that only held emptied children can go too. Each folder is
+        # re-checked immediately before the delete: anything that appeared since the plan is left
+        # alone. Remove-Item is used without -Recurse, so a non-empty directory cannot be removed.
+        $toPrune = @($emptied | Sort-Object -Property @{ Expression = { $_.Depth }; Descending = $true },
+                                                 @{ Expression = { $_.Relative }; Descending = $false })
+        $removed = 0
+        foreach ($dir in $toPrune) {
+            try {
+                if (-not (Test-Path -LiteralPath $dir.Dir)) { continue }
+                if ($Categories -contains (Split-Path -Leaf $dir.Dir)) { continue }
+                if (@(Get-ChildItem -LiteralPath $dir.Dir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+                    Write-Log 'PRUNE-SKIPPED' ('{0} (still holds content)' -f $dir.Relative)
+                    Write-Host ('  kept     {0} (still holds content)' -f $dir.Relative) -ForegroundColor DarkGray
+                    continue
+                }
+                Remove-Item -LiteralPath $dir.Dir -Force
+                $removed++
+                Write-Log 'PRUNED-FOLDER' $dir.Relative
+                Write-Host ('  pruned   {0}' -f $dir.Relative) -ForegroundColor DarkGray
+            }
+            catch {
+                $failures++
+                Write-Log 'ERROR' ('{0}: {1}' -f $dir.Relative, $_.Exception.Message)
+                Write-Host ('  ERROR    {0}: {1}' -f $dir.Relative, $_.Exception.Message) -ForegroundColor Red
+            }
+        }
+        Write-Host ('Removed {0} empty folder(s).' -f $removed) -ForegroundColor Gray
+    }
+    elseif ($interactive) {
+        Write-Host 'Empty folders left in place.' -ForegroundColor DarkGray
     }
 }
 

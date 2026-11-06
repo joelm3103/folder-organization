@@ -41,6 +41,7 @@ Proceed? [y/N]
 | `-Force` | Run without the confirmation prompt, for Task Scheduler. Also suppresses the launcher's closing pause. |
 | `-Recurse` | Also sort files found in subfolders, into this folder's category folders. |
 | `-MaxDepth N` | Limit the scan depth (immediate subfolders are depth 1). Implies `-Recurse`. |
+| `-PruneEmpty` | Delete the subfolders the scan emptied, without asking. Interactive runs are asked after sorting instead. |
 | `-Path <folder>` | Organise a different folder. Defaults to the launcher's own folder. |
 | `-LogFile <path>` | Override the action log. Defaults to `organize-log.txt` beside the scripts. |
 | `-PreviewFile <path>` | Override the long-plan report. Defaults to `organize-preview.txt` beside the log. |
@@ -48,6 +49,7 @@ Proceed? [y/N]
 ```bat
 organize-downloads.bat -WhatIf
 organize-downloads.bat -MaxDepth 1
+organize-downloads.bat -Recurse -PruneEmpty -Force
 organize-downloads.bat "D:\Unsorted Stuff" -Force
 ```
 
@@ -71,7 +73,7 @@ These are implemented, not aspirational:
 
 - **Nothing is overwritten.** A name clash is resolved by comparing SHA256: identical bytes means the incoming copy is deleted and logged as `DUPLICATE`; different bytes means the incoming file is renamed `name (2).ext` and logged as `RENAMED`.
 - **Two files can never claim one destination** within a single run, including across subfolders. The same identical-or-rename rule applies.
-- **Directories are never moved or deleted.** Only loose files are touched, and only into the category folders.
+- **Directories are never moved, and only ever deleted with your explicit yes.** A subfolder scan reports the folders it emptied and offers to delete them at the end; nothing is removed without that answer or `-PruneEmpty`, and the target folder itself and every category folder are never candidates.
 - **The tool never moves itself.** `organize-downloads.ps1`, `organize-downloads.bat`, `organize-log.txt` and `organize-preview.txt` are reported as `SKIP` and left where they are.
 - **Partial downloads are left alone** — `.crdownload`, `.part`, `.partial`, `.tmp`, `.download` — as are `desktop.ini` and `thumbs.db`.
 - **Only `~$` lock files are deleted**, which is what Office leaves behind when a document closes badly.
@@ -89,7 +91,11 @@ Also sort the 1000 files inside 90 subfolders? Their folder structure is not pre
 - Folders named after a category are never descended, so an existing `Documents\` is left intact.
 - Junctions and symbolic links are never followed.
 - `-WhatIf` and `-Force` never ask, so unattended runs stay deterministic and root-only unless the switch is passed.
-- Subfolders are reported when they are left with no files; none are ever deleted.
+- Subfolders are reported when they are left with no files, and the run then asks once: `Delete these N empty subfolders? [y/N]`, defaulting to No.
+  - Only folders the scan visited are candidates: never the target itself, never a folder named after a category, never a link.
+  - Deletion runs deepest-first so a parent that only held emptied children goes too, and each folder is re-checked immediately before the delete — anything that appeared since the plan is kept and logged `PRUNE-SKIPPED`.
+  - `Remove-Item` is used without `-Recurse`, so a directory that still holds anything cannot be removed even if that check were bypassed.
+  - `-Force` never asks and never prunes; `-Force -PruneEmpty` prunes without asking. `-WhatIf` exits long before this point.
 
 Point this at a project tree and it will flatten it. That is the honest warning: on a 1000-file client folder a full-depth scan planned 843 moves, 126 renames and 32 duplicate deletions. Use `-MaxDepth 1` when you want a bounded pass.
 
@@ -107,7 +113,7 @@ The on-screen table caps at 60 rows so a long plan stays readable. Beyond that, 
 2026-11-06 10:59:38  SKIPPED          organize-downloads.ps1 (organiser file)
 ```
 
-Action verbs: `MOVED`, `RENAMED`, `DUPLICATE`, `LOCK-DELETED`, `SKIPPED`, `CREATED-FOLDER`, `ERROR`. Scanned files carry their source folder in the log line, so a multi-folder run can be reconstructed from the log alone.
+Action verbs: `MOVED`, `RENAMED`, `DUPLICATE`, `LOCK-DELETED`, `SKIPPED`, `CREATED-FOLDER`, `PRUNED-FOLDER`, `PRUNE-SKIPPED`, `ERROR`. Scanned files carry their source folder in the log line, so a multi-folder run can be reconstructed from the log alone.
 
 Exit codes: `0` success or nothing to do, `1` an error occurred.
 

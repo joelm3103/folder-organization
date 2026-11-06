@@ -21,6 +21,8 @@ Two conventions, so an entry is never read as more than it is:
 - Two defects that only a real folder exposes are fixed: the tool sorted the folder *above* the one
   it was placed in, and its subfolder scan silently skipped every OneDrive folder.
 - Long plans gained a full-list export, so a 1000-row decision is never made from a 60-row screen.
+- A subfolder sort no longer leaves an empty skeleton behind: the run offers to delete the folders
+  it emptied, and `-PruneEmpty` does that unattended.
 
 ### Added
 
@@ -46,9 +48,23 @@ Two conventions, so an entry is never read as more than it is:
     never ask, so unattended runs stay root-only unless the switch is passed.
   - Files at any depth are filed into the target's top-level category folders. Folders named after a
     category are never descended, and junctions and symbolic links are never followed.
-  - Subfolders left with no files are reported; none are deleted.
+  - Subfolders left with no files are reported, and the run then offers once to delete them; answering
+    No, or running without `-PruneEmpty`, leaves every folder in place.
 - Self-protection: `organize-downloads.ps1`, `organize-downloads.bat`, `organize-log.txt` and
   `organize-preview.txt` are reported as `SKIP` and never moved or duplicated by a run.
+- Post-sort pruning of the folders the scan emptied, as one question after the moves:
+  `Delete these N empty subfolders? [y/N]`, defaulting to No.
+  - Candidates are only folders the scan visited that hold no file at any depth beneath them: never
+    the target itself, never a folder named after a category, never a junction or link.
+  - Deepest-first, and each folder is re-checked immediately before the delete, so anything that
+    appeared since the plan is kept and logged `PRUNE-SKIPPED`. `Remove-Item` runs without
+    `-Recurse`, so a non-empty directory cannot be removed even if that check were bypassed.
+  - `-Force` never prompts and never prunes; `-Force -PruneEmpty` prunes unattended; `-WhatIf` exits
+    before execution, so a dry run asks nothing and deletes nothing.
+  - One `PRUNED-FOLDER` line per removal, and a prune failure counts as a run failure and exits 1.
+  - Verified on disposable trees: the yes and no answers, `-Force` with and without the switch,
+    `-WhatIf`, the still-holds-content guard, a category-named folder left alone, and a delete
+    refused by access rights leaving that folder intact while the run exited 1.
 - Full-list export: when the plan exceeds the 60-row screen cap, every row, note and the summary are
   written to `organize-preview.txt` before the prompt, with the path announced.
   - Written on `-WhatIf` too, because the report describes the folder and changes nothing in it.

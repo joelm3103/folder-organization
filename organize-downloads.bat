@@ -4,7 +4,7 @@ REM
 REM Put this .bat and the .ps1 in the folder you want sorted, then double-click. The folder they
 REM sit in is the folder that gets organised; -Path overrides it.
 REM
-REM Usage: organize-downloads.bat [-Recurse] [-MaxDepth N] [-WhatIf] [-Force] [-LogFile "path"] [-PreviewFile "path"] ["path to organise"]
+REM Usage: organize-downloads.bat [-Recurse] [-MaxDepth N] [-WhatIf] [-Force] [-LogFile "path"] [-PreviewFile "path"] [-PruneEmpty] ["path to organise"]
 REM   -Recurse / -MaxDepth  also sort files found in subfolders (asks first when run interactively)
 REM
 REM The window stays open at the end so the result can be read. Pass -Force to skip that pause:
