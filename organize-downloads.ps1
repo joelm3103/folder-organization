@@ -153,7 +153,10 @@ if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
     Write-Host "ERROR: folder not found: $Path" -ForegroundColor Red
     exit 1
 }
-$Path = (Resolve-Path -LiteralPath $Path).ProviderPath
+# Get-Item, not Resolve-Path: Resolve-Path hands back an 8.3 short name unchanged ('JOEL~1.MAN')
+# while Get-ChildItem reports every child as a long path, so every relative-path calculation in this
+# script (Substring of the root length) sliced the string mid-name and produced 'y\Work\Logs'.
+$Path = (Get-Item -LiteralPath $Path).FullName
 
 # ---------------------------------------------------------------- ruleset
 $Rules = [ordered]@{
@@ -275,10 +278,12 @@ function Get-NoteText($row) {
     $item = $row.Item
     if ($row.Act -eq 'MOVE FOLDER' -or $row.Act -eq 'RENAME FOLDER') {
         $tail = $item.Dest + '\' + (Split-Path -Leaf $item.Target)
+        # A root project has no bucket above it, so it must not render as '.\Work'.
+        $where = if ($item.Rel -eq '.') { $item.Name } else { $item.Rel + '\' + $item.Name }
         if ($row.Act -eq 'RENAME FOLDER') {
-            return ('{0}\{1} ({2}) -> {3} (name clash, folder renamed)' -f $item.Rel, $item.Name, $item.Detail, $tail)
+            return ('{0} ({1}) -> {2} (name clash, folder renamed)' -f $where, $item.Detail, $tail)
         }
-        return ('{0}\{1} ({2}) -> {3}' -f $item.Rel, $item.Name, $item.Detail, $tail)
+        return ('{0} ({1}) -> {2}' -f $where, $item.Detail, $tail)
     }
     $where = if ($item.Rel -eq '.') { $row.Name } else { $item.Rel + '\' + $row.Name }
     switch ($row.Act) {
@@ -397,7 +402,15 @@ function Get-FolderComposition([string]$Folder) {
 # Empty folders at any depth beneath the root, deepest first. A file this run is about to move away
 # counts as already gone, so the preview can say what the delete question will be about. Never the
 # root itself, never an immediate category folder, never a link.
-function Get-EmptyFolders([string]$Root, [string[]]$Departing) {
+# Rewrites maps a project that is about to leave to where it will land. Its contents travel with it, so
+# it must be judged at the new path - otherwise Work\Clients looks empty (its file is 'departing') when
+# Projects\Work\Clients still holds that file. Dir is the real path on disk, so it is only meaningful
+# when the caller passes no rewrites - execution runs after the moves and needs none.
+function Get-EmptyFolders([string]$Root, [string[]]$Departing, [hashtable]$Rewrites = @{}) {
+    # The relative path below is carved out of the child's FullName with the root's length, which is only
+    # sound when both strings are in the same form. Normalise the root here so no caller can hand us a
+    # short name and silently get 'y\Work\Logs' instead of 'Work\Logs'.
+    $Root = (Get-Item -LiteralPath $Root).FullName
     $gone = @{}
     foreach ($path in @($Departing)) {
         if ($path) { $gone[$path.ToLowerInvariant()] = $true }
@@ -424,8 +437,18 @@ function Get-EmptyFolders([string]$Root, [string[]]$Departing) {
             if (-not $gone.ContainsKey($file.FullName.ToLowerInvariant())) { $remaining++; break }
         }
         if ($remaining -eq 0) {
+            # Judge it where it will land, not where it is. Project roots are disjoint, so the first
+            # prefix that matches is the only one that can.
+            $future = $relative
+            foreach ($old in @($Rewrites.Keys)) {
+                if ($relative -ieq $old) { $future = $Rewrites[$old]; break }
+                if ($relative.StartsWith($old + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $future = $Rewrites[$old] + $relative.Substring($old.Length)
+                    break
+                }
+            }
             [void]$out.Add([pscustomobject]@{
-                Dir = $dir.FullName; Relative = $relative; Depth = ($relative.Split('\')).Count
+                Dir = $dir.FullName; Relative = $future; Depth = ($future.Split('\')).Count
             })
         }
     }
@@ -446,6 +469,20 @@ if ($Categories -contains $targetLeaf) {
 }
 Write-Host ''
 
+# ---------------------------------------------------------------- root children
+# Level 1 is decided here, once, before anything is planned. A folder sitting at the root is either one
+# of the eight category folders - structure this tool maintains, and the only thing level 2 may sweep -
+# or it is a PROJECT: never entered, opaque at every depth, relocated whole to Projects\<name>.
+# The same trees the sweep never enters are never judged a project either.
+$rootChildren = @(Get-ChildItem -LiteralPath $Path -Directory -Force -ErrorAction SilentlyContinue |
+    Where-Object {
+        -not $_.LinkType -and
+        -not $_.Name.StartsWith('.') -and
+        -not ($NeverSweep -contains $_.Name.ToLowerInvariant())
+    } | Sort-Object Name)
+$categoryRoots = @($rootChildren | Where-Object { $Categories -contains $_.Name })
+$rootFolders = @($rootChildren | Where-Object { -not ($Categories -contains $_.Name) })
+
 # ---------------------------------------------------------------- subfolder decision
 $interactive = (-not $WhatIf) -and (-not $Force)
 $explicitScan = $Recurse -or ($MaxDepth -gt 0)
@@ -455,6 +492,14 @@ $scanDirs = @()
 if ($explicitScan) {
     $scanDirs = @(Get-ScanTargets -Root $Path -MaxDepth $MaxDepth)
     $useSubfolders = $true
+
+    # The switch is the one way into a root project folder, so it says out loud how many it will enter.
+    # It flattens them rather than moving them whole: a folder emptied by the scan is offered for prune.
+    if ($rootFolders.Count -gt 0) {
+        Write-Host ('WARNING: the subfolder scan will enter {0} root project folder(s) and flatten their contents.' -f $rootFolders.Count) -ForegroundColor Yellow
+        Write-Host '         Only a plain run moves them whole to Projects\.' -ForegroundColor Yellow
+        Write-Host ''
+    }
 }
 
 # There is deliberately no prompt here. Asking "sort the subfolders too?" put every project folder
@@ -467,47 +512,42 @@ if ($explicitScan) {
 # category folder. That second pass is what lets a screenshot left in Documents\ reach Pictures\.
 # Nothing is ever taken out of a folder that lives inside a category folder - that is a project.
 $entries = New-Object System.Collections.ArrayList
-$sweepFiles = 0     # loose files found directly inside an immediate subfolder
-$sweptFolders = 0   # ...in this many folders
+$sweepFiles = 0     # loose files found directly inside a category folder
+$sweptFolders = 0   # ...in this many category folders
 $inPlaceCount = 0   # ...of which these were already in the right category folder
 
 foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Force)) {
     [void]$entries.Add([pscustomobject]@{ File = $file; Rel = '.'; InPlace = $false; Bucket = $null; IsCategory = $false })
 }
 
-# Every immediate subfolder is a bucket, category or not: a loose screenshot in Media Assets needs the
-# same treatment as one left in Documents. Its loose files are always filed - an unrecognised file goes
-# to Other\ like everything else. Never entered: links, dotted folders and tooling trees.
-# Only when the scan is not recursive: -Recurse walks these same folders itself, and enumerating them
-# twice would turn every depth-1 file into a duplicate of itself.
+# Level 2: the eight category folders hand over their loose files, so a screenshot left in Documents\
+# reaches Pictures\. A folder at the root that is not a category folder is a PROJECT and is never swept -
+# its files travel with it, untouched. Only when the scan is not recursive: -Recurse walks these same
+# folders itself, and enumerating them twice would turn every depth-1 file into a duplicate of itself.
 $bucketDirs = if ($useSubfolders) {
     @()
 }
 else {
-    @(Get-ChildItem -LiteralPath $Path -Directory -Force -ErrorAction SilentlyContinue | Sort-Object Name)
+    $categoryRoots
 }
-
-$sweepBuckets = New-Object System.Collections.ArrayList
 
 foreach ($dir in $bucketDirs) {
     if ($dir.LinkType) { continue }
     if ($dir.Name.StartsWith('.')) { continue }
     if ($NeverSweep -contains $dir.Name.ToLowerInvariant()) { continue }
 
-    $isCategory = $Categories -contains $dir.Name
     $sweptFolders++
-    [void]$sweepBuckets.Add($dir.Name)
 
     foreach ($file in @(Get-ChildItem -LiteralPath $dir.FullName -File -Force -ErrorAction SilentlyContinue)) {
         $sweepFiles++
         $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
         $belongs = if ($Map.ContainsKey($ext)) { $Map[$ext] } else { $Fallback }
-        # Only a category folder can hold a file that is already where it belongs. Media Assets\a.pdf is
-        # not "already filed" just because the name matched - it still belongs in Documents.
-        $inPlace = $isCategory -and ($belongs -eq $dir.Name)
+        # Every bucket here is a category folder, so a file whose category matches its folder is already
+        # where it belongs. It is left alone without a row of its own.
+        $inPlace = ($belongs -eq $dir.Name)
         if ($inPlace) { $inPlaceCount++ }
         [void]$entries.Add([pscustomobject]@{
-            File = $file; Rel = $dir.Name; InPlace = $inPlace; Bucket = $dir.Name; IsCategory = $isCategory
+            File = $file; Rel = $dir.Name; InPlace = $inPlace; Bucket = $dir.Name; IsCategory = $true
         })
     }
 }
@@ -629,23 +669,52 @@ $toLock = @($plan | Where-Object { $_.Action -eq 'LOCK-DELETE' })
 $toSkip = @($plan | Where-Object { $_.Action -eq 'SKIPS' })
 
 # ---------------------------------------------------------------- project folders
-# A folder inside a bucket is a project: its insides are never touched, only the folder as a whole can
-# move. Where it goes depends on the bucket it was found in - a project out of a category folder is
-# judged by its contents (Documents win outright, otherwise one category has to win outright, so an
-# evenly mixed folder stays put), while a project out of any other bucket simply belongs in Projects\.
+# Two kinds of project, and neither is ever entered: its insides are never touched, only the folder as a
+# whole can move.
+#   level 1 - a folder sitting at the root            -> Projects\<name>, flat
+#   level 3 - a folder inside a category folder      -> judged by its contents: a pinned document type
+#                                                       sends it to Documents, otherwise one category
+#                                                       has to win outright, so an evenly mixed folder
+#                                                       stays exactly where it is
+# A folder already sitting inside Projects\ is where it belongs.
 $folderPlan = New-Object System.Collections.ArrayList
 $reservedFolders = @{}
 
-# Under -Recurse the buckets have already been flattened file by file, so only the category folders
-# are still worth relocating from; a plain run relocates out of every bucket it swept.
-$relocateBuckets = if ($useSubfolders) { @($Categories) } else { @($sweepBuckets) }
+$projects = New-Object System.Collections.ArrayList
 
-foreach ($project in @(Get-ProjectFolders $Path $relocateBuckets)) {
+# Level 1. Under -Recurse the scan enters these folders and flattens them instead, so they are not
+# planned as moves: whatever the scan empties falls to the deletion question like any other folder.
+if (-not $useSubfolders) {
+    foreach ($dir in $rootFolders) {
+        # An empty root folder is debris, not a project, and moving it would only fill Projects\ with
+        # empty folders the next run has to walk. It is left to the prune question instead.
+        if ((Get-FolderFileCount $dir.FullName) -eq 0) { continue }
+        [void]$projects.Add([pscustomobject]@{
+            Dir = $dir.FullName; Name = $dir.Name; Parent = '.'; IsCategory = $false
+        })
+    }
+}
 
-    # A project already sitting in Projects\ is where it belongs; its own children are never looked at.
+# Level 3: a folder inside a category bucket. Children of Projects\ itself are where they belong, so
+# they are dropped before the move is planned.
+foreach ($project in @(Get-ProjectFolders $Path @($Categories))) {
     if ($project.Parent -eq $ProjectBucket) { continue }
+    [void]$projects.Add($project)
+}
 
-    if ($project.IsCategory) {
+foreach ($project in @($projects | Sort-Object Parent, Name)) {
+
+    if ($project.Parent -eq '.') {
+        # Level 1, flat: Projects\<name>. Two unrelated folders can no longer collide the way two
+        # 'Scripts' folders inside different buckets did, because a root folder is the only one of its
+        # name - so the Projects\<bucket>\<name> grouping has nothing left to separate. A clash with an
+        # existing Projects\<name> still renames the incoming folder rather than merging into it.
+        $wanted = $null
+        $destDir = Join-Path $Path $ProjectBucket
+        $preserved = Get-FolderFileCount $project.Dir
+        $detail = '{0} file(s), kept together' -f $preserved
+    }
+    elseif ($project.IsCategory) {
         $composition = Get-FolderComposition $project.Dir
         if ($composition.Total -eq 0) { continue }
 
@@ -668,12 +737,8 @@ foreach ($project in @(Get-ProjectFolders $Path $relocateBuckets)) {
         $detail = $composition.Summary
     }
     else {
-        # Grouped, not flat: Projects\<bucket>\<name> keeps the grouping the buckets already had, so two
-        # unrelated folders called Scripts stay apart instead of becoming 'Scripts' and 'Scripts (2)'.
-        $wanted = $null
-        $destDir = Join-Path (Join-Path $Path $ProjectBucket) $project.Parent
-        $preserved = Get-FolderFileCount $project.Dir
-        $detail = '{0} file(s), kept together' -f $preserved
+        # Nothing else can be a project: the only buckets left are the category folders.
+        continue
     }
 
     if ($wanted) {
@@ -697,6 +762,10 @@ foreach ($project in @(Get-ProjectFolders $Path $relocateBuckets)) {
     })
 }
 
+# The Source column has to exist wherever a row can come from somewhere other than the root - and a
+# folder row always does, which is now true of a root project too.
+$showSource = $showSource -or ($folderPlan.Count -gt 0)
+
 # Scaffold and prune are part of the plan's shape, not afterthoughts: the folders that will be created
 # and the folders that will be offered for deletion are decided before anything is asked.
 $scaffoldMissing = @($Categories | Sort-Object | Where-Object {
@@ -707,17 +776,14 @@ $departing = New-Object System.Collections.ArrayList
 foreach ($item in @($plan | Where-Object { $_.Action -in @('MOVE', 'RENAME', 'DUPLICATE', 'LOCK-DELETE') })) {
     [void]$departing.Add($item.Source)
 }
-# A folder that is about to leave takes everything in it, so its bucket counts as empty in the preview too.
+# A project that is about to leave is judged where it lands, not where it is: it keeps every file it
+# holds, so its old subfolders are neither empty nor candidates while its new ones are.
+$rewrites = @{}
 foreach ($item in $folderPlan) {
-    foreach ($file in @(Get-ChildItem -LiteralPath $item.Source -File -Force -Recurse -ErrorAction SilentlyContinue)) {
-        [void]$departing.Add($file.FullName)
-    }
+    $oldRelative = if ($item.Rel -eq '.') { $item.Name } else { $item.Rel + '\' + $item.Name }
+    $rewrites[$oldRelative] = $item.Dest + '\' + (Split-Path -Leaf $item.Target)
 }
-# A folder that is itself relocating is not a deletion candidate - its old path ceases to exist.
-$relocating = @{}
-foreach ($item in $folderPlan) { $relocating[$item.Source.ToLowerInvariant()] = $true }
-$predictedEmpty = @(Get-EmptyFolders -Root $Path -Departing @($departing) |
-                    Where-Object { -not $relocating.ContainsKey($_.Dir.ToLowerInvariant()) })
+$predictedEmpty = @(Get-EmptyFolders -Root $Path -Departing @($departing) -Rewrites $rewrites)
 
 if ($plan.Count -eq 0 -and $folderPlan.Count -eq 0 -and $scaffoldMissing.Count -eq 0 -and $predictedEmpty.Count -eq 0) {
     if ($useSubfolders) {
@@ -770,7 +836,7 @@ foreach ($item in $plan) {
 foreach ($item in $folderPlan) {
     [void]$rows.Add([pscustomobject]@{
         Name = $item.Name
-        Src  = $item.Rel
+        Src  = if ($item.Rel -eq '.') { '(root)' } else { $item.Rel }
         Type = 'Folder'
         Dest = $item.Dest
         Act  = if ($item.Action -eq 'RENAME-FOLDER') { 'RENAME FOLDER' } else { 'MOVE FOLDER' }
@@ -927,7 +993,7 @@ if ($rows.Count -gt $shown) {
     }
     [void]$lines.Add(('Files      : {0}' -f $rows.Count))
     if ($sweptFolders -gt 0) {
-        [void]$lines.Add(('Buckets    : {0} folder(s) swept, {1} file(s), {2} already in place' -f $sweptFolders, $sweepFiles, $inPlaceCount))
+        [void]$lines.Add(('Categories : {0} folder(s) swept, {1} file(s), {2} already in place' -f $sweptFolders, $sweepFiles, $inPlaceCount))
     }
     if ($scaffoldMissing.Count -gt 0) {
         [void]$lines.Add(('Scaffold   : {0} category folder(s) to create ({1})' -f $scaffoldMissing.Count, ($scaffoldMissing -join ', ')))
@@ -1122,7 +1188,7 @@ Write-Host ''
 # immediately beforehand: a folder that appeared since the plan is never silently merged into.
 if ($folderPlan.Count -gt 0 -and $moveFolders) {
     foreach ($item in $folderPlan) {
-        $label = '{0}\{1}' -f $item.Rel, $item.Name
+        $label = if ($item.Rel -eq '.') { $item.Name } else { '{0}\{1}' -f $item.Rel, $item.Name }
         try {
             if (-not (Test-Path -LiteralPath $item.Source)) { continue }
             if (Test-Path -LiteralPath $item.Target) {
