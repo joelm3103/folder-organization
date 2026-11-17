@@ -12,6 +12,104 @@ Two conventions, so an entry is never read as more than it is:
 - An entry recorded after the fact **says so**, so a retrospective note cannot be mistaken for a
   same-day record.
 
+## [2026-11-17]
+
+**In short:**
+
+- A folder sitting at the root is now a **project**: never entered, moved whole to `Projects\<name>`,
+  its contents untouched. That is the new level 1, and the old levels 1 and 2 become levels 2 and 3.
+- **Superseded:** ~~every bucket gives up its files~~ (2026-11-06). Only the eight category folders
+  hand over loose files now. A `Work\` or `Media Assets\` folder at the root keeps everything it held
+  instead of being scattered into `Documents\` and `Pictures\` before being relocated.
+- `Projects\<bucket>\<name>` is retired, not deprecated: with level 1 opaque the only buckets left are
+  category folders, so the grouped form can no longer be produced. A root folder lands flat, at
+  `Projects\<name>`.
+- The preview's empty-folder count now matches the prune report for a relocated project, which it did
+  not before — and a target reached through an 8.3 short name no longer produces mangled folder names
+  or offers the scaffolded category folders for deletion.
+
+### Added
+
+- Level 1: a non-category folder at the target root is a project, relocated whole to `Projects\<name>`
+  and opaque at every depth beneath it. Its loose files travel with it — nothing inside it is routed,
+  renamed or deleted.
+  - The eight category folders and `Projects\` itself are structure, never projects, so the scaffold
+    cannot relocate itself.
+  - An empty root folder (no files at any depth) is debris rather than a project: it is excluded from
+    the folder-move plan and left to the normal "Delete these N empty folders?" question instead of
+    filling `Projects\` with empty folders.
+  - Moved with the same `MOVE-FOLDER` / `RENAMED-FOLDER` verbs, the same separate `[y/N]` prompt
+    (default No), the same `-MoveProjects` opt-in, and the same never-merge rename (`Work (2)`) as
+    the existing level-3 rule. `-Force` alone still never moves a folder.
+- A warning under `-Recurse` / `-MaxDepth` naming how many root project folders the scan is about to
+  enter, because that switch is the only way in and it flattens them rather than moving them whole.
+  Root folders are not planned as project moves under the scan; whatever it empties falls to prune.
+- Preview support for a project with no bucket above it: folder rows show `(root)` in the Source
+  column, notes render `Work (2 file(s), kept together) -> Projects\Work` rather than a leading `\`.`,
+  the Source column appears whenever a folder row exists, and `$showSource` accounts for it.
+
+### Changed
+
+- Levels renumbered. Level 2 is now the loose-file sweep of the category folders (previously every
+  immediate subfolder) and level 3 is the contents rule for a folder inside a category folder
+  (previously level 2). The contents rule itself is unchanged: a pinned document type sends the folder
+  to `Documents`, otherwise one category must win outright, and a tie or a text-only folder stays put.
+- `Get-EmptyFolders` takes a `-Rewrites` map so a project that is about to leave is judged where it
+  lands. Previously every file inside a relocating folder counted as departing, so `Work\Clients` was
+  predicted empty while `Projects\Work\Clients` still holds its file; the preview now reports
+  `Projects\Work\Logs` and the prune then reports the same folder under the same path.
+- The preview export header line reads `Categories : N folder(s) swept` rather than `Buckets`, since
+  only category folders can be swept.
+
+### Removed
+
+- The `Projects\<bucket>\<name>` destination and the `$sweepBuckets` bookkeeping that fed it. Two
+  folders called `Scripts` can no longer collide, because only one could ever sit at the root; the
+  other lives inside a project and travels with it.
+
+### Fixed
+
+- **Relative paths were carved out of an 8.3 short name.** The target was resolved with
+  `Resolve-Path`, which returns a short name unchanged (`C:\Users\JOEL~1.MAN\...`) while
+  `Get-ChildItem` reports every child as a long path. Every `Substring($Root.Length)` relative path then
+  sliced mid-name, so empty folders were listed as `y\Work\Logs` instead of `Work\Logs`.
+  - Two silent consequences. The top-level category-folder exemption stopped recognising `Music\`,
+    `Other\`, `Software\` and `Videos\` because it tests the relative path for a backslash, so the
+    scaffolded folders were offered for deletion. And the project rewrite below never matched its
+    prefix, so a relocating project was judged at its old path again.
+  - The target is now resolved with `Get-Item` (`FullName`, long form), and `Get-EmptyFolders`
+    normalises its root, so no caller can reintroduce the mismatch.
+  - Pre-existing, and invisible until this change started comparing relative paths against rewrite
+    keys. Found while writing `VERIFICATION.md`, which is also its regression check.
+
+### Verified
+
+- Throwaway fixtures under the temp directory, run with Windows PowerShell 5.1. The fixture builder,
+  the commands and the printed values are in `VERIFICATION.md`; the figures below are that run:
+  - `-WhatIf` on a tree holding loose `archive.zip` and `invoice.pdf`, `Documents\stray.png`,
+    `Documents\Sub3\{p1,p2,p3}.png`, `Work\{a.pdf, Clients\x.pdf, Logs\}` and an empty `Scratch\`
+    planned 3 moves and 2 folder moves — `Work (root) -> Projects` and `Sub3 -> Pictures` — and
+    predicted `Empty folders after this run: 2 (Projects\Work\Logs, Scratch)` without changing a byte.
+  - `-Force -MoveProjects -PruneEmpty` on the same tree left `a.pdf` (`ca978112…`) and `Clients\x.pdf`
+    (`2e7d2c03…`) byte-identical under `Projects\Work\`, pruned exactly the two folders the preview
+    named, and wrote no log line for either file — only `MOVED-FOLDER Work -> Projects\Work`. The
+    root folder was never entered.
+  - A second run made zero moves and zero folder moves (`3 skip`), and `-Path Z:\does-not-exist`
+    exits 1.
+  - A name clash (`Dup` at the root against an existing `Projects\Dup`) planned `RENAME FOLDER` to
+    `Projects\Dup (2)` and left `Projects\Dup` untouched.
+  - A root folder holding no files (`EmptyOnly`) produced no project row and was pruned on the normal
+    question.
+  - `-Recurse -WhatIf` and `-MaxDepth 1 -WhatIf` printed `the subfolder scan will enter 1 root project
+    folder(s)`, listed the flattened rows and produced no `MOVE FOLDER` row for the root folder;
+    `-MaxDepth 1` left the folder out of the empty-folder list because a deeper file still held it open.
+  - The same fixture reached through `$env:TEMP` — whose short name is `C:\Users\JOEL~1.MAN\...` —
+    printed `Projects\Work\Logs` rather than the `y\Work\Logs` the old resolution produced, and
+    listed two candidates instead of six.
+- README updated in the same pass; the render in `README.md` is the verbatim `-WhatIf` output of the
+  fixture above. `VERIFICATION.md` carries the fixture builder, the commands and the values each run
+  printed, so the transcript can be re-run rather than trusted.
+
 ## [2026-11-06]
 
 **In short:**
@@ -180,8 +278,6 @@ Two conventions, so an entry is never read as more than it is:
   its path was not counted as departing, so a bucket holding nothing else was not predicted empty. Added
   to the departing set; a bucket with one lock file and one stale document now reports `Empty folders
   after this run: 1`.
-
-### Fixed
 
 - A run whose confirmation prompt received no input at all **proceeded instead of aborting**, moving
   files without a yes. `Read-Host` returns `$null` at end of input and `$null -notmatch 'pattern'`
