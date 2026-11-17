@@ -15,7 +15,8 @@ It tidies four levels. **Loose files at the root** are filed by extension. A **f
 
 1. Copy both files into the folder you want sorted.
 2. Double-click `organize-downloads.bat`.
-3. Read the preview, answer `y`.
+3. Read the preview and answer the questions — `Create all eight category folders?` and then
+   `Proceed?`.
 
 The folder the two files sit in is the folder that gets organised. The window stays open at the end so the result is readable.
 
@@ -45,6 +46,7 @@ Proceed? [y/N]
 | `-MaxDepth N` | Limit the scan depth (immediate subfolders are depth 1). Implies `-Recurse`. |
 | `-PruneEmpty` | Delete the empty folders left after the moves, without asking. Interactive runs are asked once, deepest first. |
 | `-MoveProjects` | Move the project folders the preview lists, without asking. Interactive runs are asked after the preview instead. |
+| `-Scaffold` | Create all eight category folders, including the ones nothing is filed into. Interactive runs are asked instead and the default answer is No, so `-Force` alone creates only the folders it files into. |
 | `-Path <folder>` | Organise a different folder. Defaults to the launcher's own folder. |
 | `-LogFile <path>` | Override the action log. Defaults to `organize-log.txt` beside the scripts. |
 | `-PreviewFile <path>` | Override the long-plan report. Defaults to `organize-preview.txt` beside the log. |
@@ -135,7 +137,7 @@ Notes
   Work (2 file(s), kept together) -> Projects\Work
   Documents\Sub3 (3 pictures) -> Pictures\Sub3
 
-Category folders to create: Archives, Music, Other, Pictures, Projects, Software, Videos
+Category folders missing: 7 (Archives, Music, Other, Pictures, Projects, Software, Videos) - pass -Scaffold to create all of them; otherwise only the ones this run files into.
 Empty folders after this run: 1 (Scratch)
   You will be asked whether to delete them.
 
@@ -146,9 +148,23 @@ Row 4 is the new level 1: `Work` is not a category folder, so it is a project �
 
 An empty root folder is not a project: it is left to the delete question rather than moved into `Projects\` empty. Whole-folder moves are asked about separately from the file moves, because they are a bigger decision: `Move these 2 project folders to their matching category? [y/N]`, default No. `-MoveProjects` moves them without asking; `-Force` alone never moves one. A name clash renames the incoming folder `Work (2)` — nothing is ever merged.
 
-### Every run leaves the structure
+### Category folders are asked about
 
-All eight category folders — `Archives`, `Documents`, `Music`, `Other`, `Pictures`, `Projects`, `Software`, `Videos` — exist after any real run, whether or not anything was filed into them. A folder that is already tidy is still a folder that should be ready for the next file, so the preview names the ones that will be created before you answer. `-WhatIf` creates nothing.
+Before sorting, the run asks one question about the folder's shape:
+
+```
+Create all eight category folders? [y/N]
+  Missing: Archives, Music, Other, Pictures, Projects, Software, Videos
+  No creates only the folders this run files into.
+```
+
+Yes gives the full structure — `Archives`, `Documents`, `Music`, `Other`, `Pictures`, `Projects`, `Software`, `Videos` — whether or not anything was filed into them, so every folder is ready for the next file. It is the whole of the old behaviour, kept for when that is what you want.
+
+No, and the default (just pressing Enter), creates only the folders this run actually files into. A run that moves one PDF leaves `Documents\` and nothing else; no empty category folder is ever made. The moves create their own destination folders as they go, so nothing has to be set up in advance — this is simply the scaffold step not running.
+
+`-Scaffold` answers yes without asking. An unattended `-Force` run is minimal unless that switch is passed, so a scheduled task tidies files without ever building structure it does not need. `-WhatIf` creates nothing and names which folders a yes would add; an unattended minimal run names only how many are missing, because whether `Projects\` is needed depends on the folder-move answer, which a preview has not been given yet.
+
+A folder with nothing to sort still asks. Yes builds the eight, so a brand-new folder can be prepared by hand; No prints `Nothing to organise` and exits having changed nothing.
 
 ### Empty folders
 
