@@ -24,17 +24,19 @@
     folders. Where a project goes
     depends on the bucket it was found in. Out of a category folder it is judged by its contents - real
     document types (doc, docx, xls, xlsx, ppt, pptx, ppsx, pdf, rtf) pin it to Documents, otherwise the
-    single largest category decides, and a tie or a text-only folder leaves it where it is. Out of any
-    other bucket it is simply a project, and it moves whole to Projects\<bucket>\<name>, keeping the
-    bucket it came from. Interactive runs are asked before any folder moves; -MoveProjects does it
-    unattended, and -Force alone never moves one.
+    single largest category decides, and a tie or a text-only folder leaves it where it is. A folder
+    sitting at the root is always a project: it moves whole to Projects\<name>, and nothing is
+    filtered out of it on the way. Interactive runs are asked before any folder moves; -MoveProjects
+    does it unattended, and -Force alone never moves one.
 
-    Every run leaves the structure in place: all eight category folders - Archives, Documents, Music,
-    Other, Pictures, Projects, Software, Videos - exist afterwards whether or not anything was filed into
-    them. Folders left with no files at any depth are reported and offered for deletion on a normal run,
-    not only under -Recurse; -PruneEmpty deletes them without asking. No directory is ever removed
-    without one of those two - a plain run answers the question, and any -Force run without the switch
-    leaves every folder in place.
+    Category folders are asked about, not assumed: a plain run asks whether to create all eight -
+    Archives, Documents, Music, Other, Pictures, Projects, Software, Videos - and the default answer is
+    no, which creates only the folders this run files into, so an empty category folder never appears.
+    -Scaffold answers yes without asking; an unattended -Force run creates only what it needs unless
+    that switch is passed. Folders left with no files at any depth are reported and offered for
+    deletion on a normal run, not only under -Recurse; -PruneEmpty deletes them without asking. No
+    directory is ever removed without one of those two - a plain run answers the question, and any
+    -Force run without the switch leaves every folder in place.
 
     -Recurse (or -MaxDepth N) additionally scans subfolders outside the category folders and files
     everything into the top-level category folders; that structure is NOT preserved. This is the only
@@ -79,6 +81,12 @@
     Move the project folders whose contents belong in another category, without asking.
     Interactive runs are asked after the preview instead; -Force never prompts, so this switch is
     how an unattended run relocates a folder.
+
+.PARAMETER Scaffold
+    Create all eight category folders even when nothing is filed into them. Interactive runs are asked
+    after the preview instead, and the default answer is no; -Force never prompts, so this switch is
+    how an unattended run leaves the whole structure behind. Without it a run creates only the folders
+    it files into.
 
 .PARAMETER WhatIf
     Print the planned actions and exit without changing anything.
@@ -125,6 +133,7 @@ param(
     [int]$MaxDepth = 0,
     [switch]$PruneEmpty,
     [switch]$MoveProjects,
+    [switch]$Scaffold,
     [string]$LogFile,
     [string]$PreviewFile
 )
@@ -485,6 +494,14 @@ $rootFolders = @($rootChildren | Where-Object { -not ($Categories -contains $_.N
 
 # ---------------------------------------------------------------- subfolder decision
 $interactive = (-not $WhatIf) -and (-not $Force)
+
+# Whether all eight category folders should exist is a decision, not a given. -Scaffold answers yes up
+# front, and on an unattended run it is the only way to say yes; -Force without it creates only the
+# folders the plan files into; an interactive run is asked after the preview, with No as the default.
+# Null means "not answered yet" - the preview renders that state, and -WhatIf leaves it there.
+$scaffoldMode = if ($Scaffold) { 'all' }
+                elseif ($Force) { 'minimal' }
+                else { $null }
 $explicitScan = $Recurse -or ($MaxDepth -gt 0)
 $useSubfolders = $false
 $scanDirs = @()
@@ -707,7 +724,7 @@ foreach ($project in @($projects | Sort-Object Parent, Name)) {
     if ($project.Parent -eq '.') {
         # Level 1, flat: Projects\<name>. Two unrelated folders can no longer collide the way two
         # 'Scripts' folders inside different buckets did, because a root folder is the only one of its
-        # name - so the Projects\<bucket>\<name> grouping has nothing left to separate. A clash with an
+        # name - so the old bucket-keyed grouping had nothing left to separate. A clash with an
         # existing Projects\<name> still renames the incoming folder rather than merging into it.
         $wanted = $null
         $destDir = Join-Path $Path $ProjectBucket
@@ -785,7 +802,12 @@ foreach ($item in $folderPlan) {
 }
 $predictedEmpty = @(Get-EmptyFolders -Root $Path -Departing @($departing) -Rewrites $rewrites)
 
-if ($plan.Count -eq 0 -and $folderPlan.Count -eq 0 -and $scaffoldMissing.Count -eq 0 -and $predictedEmpty.Count -eq 0) {
+# Nothing to organise - unless the scaffolding question could still do something, in which case the run
+# carries on far enough to ask it (or, on a dry run, to name what a yes would create).
+$nothingPlanned = ($plan.Count -eq 0) -and ($folderPlan.Count -eq 0) -and ($predictedEmpty.Count -eq 0)
+$scaffoldOffered = ($scaffoldMissing.Count -gt 0) -and ($scaffoldMode -ne 'minimal')
+
+function Write-NothingToOrganise {
     if ($useSubfolders) {
         Write-Host 'Nothing to organise - no files found here or in the subfolders scanned.' -ForegroundColor Green
     }
@@ -795,6 +817,10 @@ if ($plan.Count -eq 0 -and $folderPlan.Count -eq 0 -and $scaffoldMissing.Count -
     else {
         Write-Host 'Nothing to organise - no loose files at this folder''s root.' -ForegroundColor Green
     }
+}
+
+if ($nothingPlanned -and -not $scaffoldOffered) {
+    Write-NothingToOrganise
     exit 0
 }
 
@@ -922,11 +948,25 @@ if ($notes.Count -gt 0) {
     }
 }
 
-# The two things this run will do besides moving files. Shown before the prompt so nobody has to read
-# the log to find out that eight folders are about to appear or that a batch is about to be deleted.
+# The two things this run may do besides moving files. Shown before the prompt so nobody has to read the
+# log to find out that folders are about to appear, or that a batch is about to be deleted.
 if ($scaffoldMissing.Count -gt 0) {
     Write-Host ''
-    Write-Host ('Category folders to create: {0}' -f ($scaffoldMissing -join ', ')) -ForegroundColor DarkGray
+    if ($scaffoldMode -eq 'minimal') {
+        # Deliberately no list: whether Projects\ is needed depends on the folder-move answer below, and
+        # a preview that names a folder the run then declines to create is the defect this tool already
+        # spent one fix on. The moves report what they create as they create it.
+        Write-Host ('Category folders missing: {0} - only the ones this run files into will be created.' -f $scaffoldMissing.Count) -ForegroundColor DarkGray
+    }
+    elseif ($scaffoldMode -eq 'all') {
+        Write-Host ('Category folders to create: {0}' -f ($scaffoldMissing -join ', ')) -ForegroundColor DarkGray
+    }
+    else {
+        # Unanswered: the list is factual (these are missing), so naming them cannot drift the way a
+        # promise about what will be created can.
+        $scaffoldHint = if ($interactive) { 'answer yes below to create all of them' } else { 'pass -Scaffold to create all of them' }
+        Write-Host ('Category folders missing: {0} ({1}) - {2}; otherwise only the ones this run files into.' -f $scaffoldMissing.Count, ($scaffoldMissing -join ', '), $scaffoldHint) -ForegroundColor DarkGray
+    }
 }
 if ($predictedEmpty.Count -gt 0) {
     $emptySample = (@($predictedEmpty | Select-Object -First 4) | ForEach-Object { $_.Relative }) -join ', '
@@ -995,11 +1035,14 @@ if ($rows.Count -gt $shown) {
     if ($sweptFolders -gt 0) {
         [void]$lines.Add(('Categories : {0} folder(s) swept, {1} file(s), {2} already in place' -f $sweptFolders, $sweepFiles, $inPlaceCount))
     }
-    if ($scaffoldMissing.Count -gt 0) {
-        [void]$lines.Add(('Scaffold   : {0} category folder(s) to create ({1})' -f $scaffoldMissing.Count, ($scaffoldMissing -join ', ')))
+    if ($scaffoldMissing.Count -eq 0) {
+        [void]$lines.Add('Scaffold   : complete')
+    }
+    elseif ($scaffoldMode -eq 'minimal') {
+        [void]$lines.Add(('Scaffold   : {0} category folder(s) missing, only what the plan files into' -f $scaffoldMissing.Count))
     }
     else {
-        [void]$lines.Add('Scaffold   : complete')
+        [void]$lines.Add(('Scaffold   : {0} category folder(s) to create ({1})' -f $scaffoldMissing.Count, ($scaffoldMissing -join ', ')))
     }
     [void]$lines.Add(('Empty      : {0} folder(s) after this run' -f $predictedEmpty.Count))
     if ($folderPlan.Count -gt 0) {
@@ -1094,6 +1137,29 @@ if ($folderPlan.Count -gt 0) {
         Write-Host ('Project folders left in place.' + $folderHint) -ForegroundColor DarkGray
     }
     Write-Host ''
+}
+
+# Scaffolding all eight is asked on its own, for the same reason a folder move is: it decides the
+# folder's shape rather than filing one file, so it must not ride on the Proceed answer. Default No.
+if ($scaffoldMode -eq $null) {
+    if ($scaffoldMissing.Count -gt 0) {
+        Write-Host ''
+        Write-Host 'Create all eight category folders? [y/N]' -ForegroundColor Yellow
+        Write-Host ('  Missing: {0}' -f ($scaffoldMissing -join ', ')) -ForegroundColor DarkGray
+        Write-Host '  No creates only the folders this run files into.' -ForegroundColor DarkGray
+        $scaffoldAnswer = ([string](Read-Host)).Trim()
+        $scaffoldMode = if ($scaffoldAnswer -match '^(?i)y(es)?$') { 'all' } else { 'minimal' }
+    }
+    else {
+        # Nothing is missing, so the answer could not change anything.
+        $scaffoldMode = 'minimal'
+    }
+}
+
+# A yes is the only reason to be here when nothing else was planned - a no leaves the folder untouched.
+if ($scaffoldMode -ne 'all' -and $nothingPlanned) {
+    Write-NothingToOrganise
+    exit 0
 }
 
 # Read-Host returns $null when stdin has run out, and "$null -notmatch 'pattern'" evaluates to
@@ -1217,8 +1283,10 @@ if ($folderPlan.Count -gt 0 -and $moveFolders) {
 # ---------------------------------------------------------------- scaffold
 # Every category folder exists after a real run, whether or not anything was filed into it. The point of
 # the structure is that it is there next time a file arrives, not that it was earned this time.
+# Only when asked for. In minimal mode the moves have already created every folder they needed, each
+# logged CREATED-FOLDER as it went, and an unused category folder stays absent.
 $scaffoldCreated = 0
-foreach ($category in @($Categories | Sort-Object)) {
+foreach ($category in $(if ($scaffoldMode -eq 'all') { @($Categories | Sort-Object) } else { @() })) {
     $dir = Join-Path $Path $category
     if (Test-Path -LiteralPath $dir -PathType Container) { continue }
     try {
