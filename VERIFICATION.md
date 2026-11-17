@@ -71,6 +71,42 @@ judged at its old path again. Fixed by resolving the target with `Get-Item` (`Fu
 instead of `Resolve-Path`, and by normalising the root at the top of `Get-EmptyFolders` so no caller can
 reintroduce the mismatch.
 
+## Category-folder scaffolding
+
+Same fixture builder as above, with three variations: one loose `note.pdf` (fixture A), a genuinely
+empty folder (fixture B), and fixture A answered interactively with stdin piped (fixture C). For B the
+script is kept **outside** the target — a copied script inside the folder is itself a `SKIP` row, so the
+plan is never empty and the "nothing to organise" path is never reached.
+
+| # | Check | Command | Observed |
+|---|---|---|---|
+| 11 | Unattended run creates only what it files into | `-Force` on fixture A | `Category folders missing: 8 - only the ones this run files into will be created.`; afterwards `Documents\` holds `note.pdf` and the seven other categories do not exist; no `Scaffolded` line; the log's only `CREATED-FOLDER` names `…\Documents` |
+| 12 | The switch restores the full structure | `-Force -Scaffold` on the same folder | `Category folders to create: Archives, Music, Other, Pictures, Projects, Software, Videos` then `Scaffolded 7 category folder(s).`; all eight exist |
+| 13 | An empty folder with `-Force` does nothing | `-Force` on fixture B | `Nothing to organise - no loose files at this folder's root.`; exit 0; still no subfolder |
+| 14 | A dry run still names what a yes would add | `-WhatIf` on fixture B | `Category folders missing: 8 (Archives, Documents, Music, Other, Pictures, Projects, Software, Videos) - pass -Scaffold to create all of them; otherwise only the ones this run files into.` then `Dry run (-WhatIf): nothing changed.`; exit 0; nothing created |
+| 15 | An empty folder with `-Scaffold` builds the structure | `-Force -Scaffold` on fixture B | `Scaffolded 8 category folder(s).`; all eight exist |
+| 16 | Enter at the question means minimal | `printf '
+y
+'` piped into fixture A | The question prints with `Missing: …` and `No creates only the folders this run files into.`; afterwards only `Documents\` exists and holds `note.pdf` |
+| 17 | `y` at the question builds all eight | `printf 'y
+y
+'` piped into fixture A | `Scaffolded 7 category folder(s).` plus the eighth created by the move; all eight exist |
+| 18 | Enter is not a yes for either question | `printf '
+
+'` piped into fixture A | Scaffold answered No, `Proceed?` answered No → `Aborted. Nothing changed.`; `note.pdf` still at the root and no category folder created |
+| 19 | An unattended run never asks | `-Force` on fixture A, output searched for `Create all eight category folders` | 0 matches |
+
+The prompt block itself, as printed:
+
+```
+Create all eight category folders? [y/N]
+  Missing: Archives, Documents, Music, Other, Pictures, Projects, Software, Videos
+  No creates only the folders this run files into.
+```
+
+The other interactive paths — declining a folder move, the prune question, the no-input matrix — are
+still covered only by earlier passes, not by this transcript.
+
 ## Not covered by this transcript
 
 - The launcher (`organize-downloads.bat`) end to end: the double-click pause, the `-Force` token walk and
