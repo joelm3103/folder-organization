@@ -19,17 +19,26 @@ Two conventions, so an entry is never read as more than it is:
 - A folder sitting at the root is now a **project**: never entered, moved whole to `Projects\<name>`,
   its contents untouched. That is the new level 1, and the old levels 1 and 2 become levels 2 and 3.
 - **Superseded:** ~~every bucket gives up its files~~ (2026-11-06). Only the eight category folders
-  hand over loose files now. A `Work\` or `Media Assets\` folder at the root keeps everything it held
-  instead of being scattered into `Documents\` and `Pictures\` before being relocated.
-- `Projects\<bucket>\<name>` is retired, not deprecated: with level 1 opaque the only buckets left are
-  category folders, so the grouped form can no longer be produced. A root folder lands flat, at
-  `Projects\<name>`.
+  hand over loose files now, and `Projects\<bucket>\<name>` is retired with them: a root folder keeps
+  everything it held and lands flat at `Projects\<name>`.
 - The preview's empty-folder count now matches the prune report for a relocated project, which it did
   not before — and a target reached through an 8.3 short name no longer produces mangled folder names
   or offers the scaffolded category folders for deletion.
+- Scaffolding all eight category folders is now **a question, defaulting to No**: pressing Enter creates
+  only the folders the run files into, and `-Scaffold` or a `y` answer builds the full structure.
 
 ### Added
 
+- A `Create all eight category folders? [y/N]` question, asked as its own prompt immediately before
+  `Proceed?` and after the project-folder question. Yes builds the full structure and is today's
+  behaviour; No, and the default, creates only the folders the run files into, so an empty category
+  folder never appears.
+  - Asked rather than folded into `Proceed?` for the same reason a folder move is asked separately: it
+    decides the folder's shape, not the fate of one file.
+  - `-Scaffold` answers yes without asking, and is the only way to say yes on an unattended run.
+  - A folder with nothing to sort still asks: yes builds the eight, no prints `Nothing to organise` and
+    exits 0 having changed nothing. The early exit now fires only when nothing is planned *and* no yes
+    could have done anything, so a dry run still names what a yes would add.
 - Level 1: a non-category folder at the target root is a project, relocated whole to `Projects\<name>`
   and opaque at every depth beneath it. Its loose files travel with it — nothing inside it is routed,
   renamed or deleted.
@@ -50,6 +59,13 @@ Two conventions, so an entry is never read as more than it is:
 
 ### Changed
 
+- An unattended `-Force` run now creates only the category folders it files into, where it previously
+  created all eight. A scheduled task that wants the full structure has to pass `-Scaffold`. Interactive
+  runs are unaffected in what they can do, only in what the new question asks first.
+- The preview line adapts to the answer: `all` keeps naming every folder to create, an unanswered run
+  names the missing ones and how to get them, and a minimal run states only how many are missing —
+  whether `Projects\` is needed depends on the folder-move answer that has not been given yet, so
+  naming it would publish a promise the run could break.
 - Levels renumbered. Level 2 is now the loose-file sweep of the category folders (previously every
   immediate subfolder) and level 3 is the contents rule for a folder inside a category folder
   (previously level 2). The contents rule itself is unchanged: a pinned document type sends the folder
@@ -69,6 +85,11 @@ Two conventions, so an entry is never read as more than it is:
 
 ### Fixed
 
+- **The script's own help still promised the retired grouping.** `Projects\<bucket>\<name>`, "keeping
+  the bucket it came from", survived in the comment-based help after the model changed in this same
+  section's first commits — the README and changelog were corrected at the time, the `.ps1` help was
+  not. The paragraph now describes a root folder landing at `Projects\<name>`, and the "every run
+  leaves all eight folders" promise is replaced by the question that now decides it.
 - **Relative paths were carved out of an 8.3 short name.** The target was resolved with
   `Resolve-Path`, which returns a short name unchanged (`C:\Users\JOEL~1.MAN\...`) while
   `Get-ChildItem` reports every child as a long path. Every `Substring($Root.Length)` relative path then
@@ -106,6 +127,18 @@ Two conventions, so an entry is never read as more than it is:
   - The same fixture reached through `$env:TEMP` — whose short name is `C:\Users\JOEL~1.MAN\...` —
     printed `Projects\Work\Logs` rather than the `y\Work\Logs` the old resolution produced, and
     listed two candidates instead of six.
+- The scaffolding paths, on throwaway fixtures with the script kept outside the target so the plan is
+  genuinely empty where it should be:
+  - `-Force` with one loose PDF created `Documents\` only, and the log's sole `CREATED-FOLDER` line was
+    that folder; the seven other categories stayed absent and no `Scaffolded` line appeared.
+  - `-Force -Scaffold` on the same folder printed `Scaffolded 7 category folder(s).` and all eight
+    existed afterwards.
+  - An empty folder with `-Force` printed `Nothing to organise - no loose files at this folder's root.`
+    and exited 0 having created nothing; with `-WhatIf` it named all eight missing folders and exited as
+    a dry run; with `-Force -Scaffold` it scaffolded all eight.
+  - Interactive with piped answers: Enter at the question then `y` at `Proceed?` left only `Documents\`;
+    `y` then `y` scaffolded seven after the move had made the eighth; Enter then Enter aborted at
+    `Proceed?` with nothing created and the file untouched. `-Force` printed the question zero times.
 - README updated in the same pass; the render in `README.md` is the verbatim `-WhatIf` output of the
   fixture above. `VERIFICATION.md` carries the fixture builder, the commands and the values each run
   printed, so the transcript can be re-run rather than trusted.
