@@ -9,7 +9,7 @@ A pair of files: `organize-downloads.ps1` does the work, `organize-downloads.bat
 
 It is deliberately dumb about meaning. Routing is by file extension and nothing else, so anything it does not recognise goes to `Other\` for you to re-file by hand. It will not guess that four PDFs belong to one client.
 
-It tidies two levels, and only ever loose files: the root, and the inside of **every** subfolder. A screenshot left behind in `Documents\` finds its way to `Pictures\`, and the sixteen loose images in a `Media Assets\` folder reach `Pictures\` too. Nothing is held back for being unrecognisable — an unknown file goes to `Other\` like any other. A **folder** inside a subfolder is a project: nothing inside it is touched, and it moves whole to `Projects\`.
+It tidies four levels. **Loose files at the root** are filed by extension. A **folder at the root** is a project: never entered, moved whole to `Projects\<name>`, its contents untouched. **Loose files inside a category folder** are filed out of it, so a screenshot left in `Documents\` still finds its way to `Pictures\`. And a **folder inside a category folder** is a project judged by what it contains. Nothing is held back for being unrecognisable — an unknown file goes to `Other\` like any other.
 
 ## Quick start
 
@@ -41,7 +41,7 @@ Proceed? [y/N]
 |---|---|
 | `-WhatIf` | Print the preview and exit. Creates no category folders, writes no log. |
 | `-Force` | Run without the confirmation prompt, for Task Scheduler. Also suppresses the launcher's closing pause. |
-| `-Recurse` | Also sort files found in subfolders, into this folder's category folders. |
+| `-Recurse` | Also sort files found in subfolders, into this folder's category folders. This is the only way into a root project folder — see [Subfolder scan](#subfolder-scan). |
 | `-MaxDepth N` | Limit the scan depth (immediate subfolders are depth 1). Implies `-Recurse`. |
 | `-PruneEmpty` | Delete the empty folders left after the moves, without asking. Interactive runs are asked once, deepest first. |
 | `-MoveProjects` | Move the project folders the preview lists, without asking. Interactive runs are asked after the preview instead. |
@@ -67,7 +67,7 @@ organize-downloads.bat "D:\Unsorted Stuff" -Force
 | `Videos` | mp4, avi, mkv, mov, wmv, webm, m4v, flv, mpg, mpeg |
 | `Music` | mp3, wav, m4a, aac, flac, ogg, gsm, wma |
 | `Other` | py, ps1, bat, sh, js, jar, dll, cfg, conf, ini, pem, crt, lic, drawio, and anything unrecognised |
-| `Projects` | nothing — a project folder gets there by being moved, never by a file being filed into it |
+| `Projects` | nothing — a root folder lands at `Projects\<name>` by being moved, and a project out of a category folder lands in the category its contents belong to. No file is ever filed into `Projects\` |
 
 The whole table lives in one ordered hashtable at the top of the `.ps1`. Edit it there; nothing else needs to know.
 
@@ -78,7 +78,7 @@ These are implemented, not aspirational:
 - **Nothing is overwritten.** A name clash is resolved by comparing SHA256: identical bytes means the incoming copy is deleted and logged as `DUPLICATE`; different bytes means the incoming file is renamed `name (2).ext` and logged as `RENAMED`. The hash is compared again at deletion time, so a file edited after the preview is kept and logged `DUPLICATE-SKIPPED` instead of being removed.
 - **Two files can never claim one destination** within a single run, including across subfolders. The same identical-or-rename rule applies.
 - **Directories are never taken apart, and never deleted without a yes.** A project folder moves only as a whole, and only when you approve it; empty folders are reported on every run and deleted only on your answer, or with `-PruneEmpty`. The target folder itself and the eight category folders are never candidates, and `-Force` alone never deletes anything.
-- **A project folder is opaque to files.** Not one file inside a folder that lives in a bucket is moved, renamed or deleted, at any depth, and a root folder is never relocated. Empty *directories* inside it are still fair game for the delete question — say No if a project's skeleton matters to you. The folder itself moves to `Projects\` as one piece, keeping its bucket (`Projects\Work\Clients`), so two unrelated folders called `Scripts` stay apart instead of becoming `Scripts` and `Scripts (2)`.
+- **A project folder is opaque to files.** Not one file inside a project is moved, renamed or deleted, at any depth. That covers a folder found inside a category folder *and* every folder sitting at the root: the folder moves whole to `Projects\<name>` and takes its contents with it, including loose files that would have been filed had they sat at the root instead. Empty *directories* inside it are still fair game for the delete question — say No if a project's skeleton matters to you. A destination that already exists is never merged into: the incoming folder is renamed `Work (2)`.
 - **Unknown files are not special.** A `.dwg`, a `.py` or a `.bak` has no better home than `Other\`, and that is where it goes — the same rule as a screenshot. `Other\` is a category, not a scrap heap you have to sort out.
 - **Tooling folders are never entered** — dotted names, `node_modules`, `__pycache__`, `System Volume Information`, `$RECYCLE.BIN` — and neither are junctions or symbolic links.
 - **The tool never moves itself.** `organize-downloads.ps1`, `organize-downloads.bat`, `organize-log.txt` and `organize-preview.txt` are reported as `SKIP` and left where they are.
@@ -88,23 +88,26 @@ These are implemented, not aspirational:
 - **A file already in its destination is never judged a duplicate of itself.**
 - **Every action is logged** with a timestamp, so a run can be unwound by hand from the log.
 
-## Buckets, projects and empty folders
+## Levels, projects and empty folders
 
-A plain run does three things, and nothing else:
+A plain run does four things, and nothing else:
 
 1. **Loose files at the root** are sorted into the category folders.
-2. **Loose files inside every immediate subfolder** are sorted out of them, so `Documents\screenshot.png` becomes `Pictures\screenshot.png` and `Media Assets\background.jpg` becomes `Pictures\background.jpg`. A file already sitting in its own category folder is left alone without a row of its own.
-3. **Folders left holding no files** are reported, and offered for deletion.
+2. **A folder at the root** is a project: it is never entered, and it moves whole to `Projects\<name>`.
+3. **Loose files inside a category folder** are sorted out of it, so `Documents\screenshot.png` becomes `Pictures\screenshot.png`. A file already sitting in its own category folder is left alone without a row of its own.
+4. **Folders left holding no files** are reported, and offered for deletion.
 
-Level one is **buckets**, level two is **projects**. A bucket is any immediate subfolder, category or not. A folder inside a bucket is a project: it is never entered, and it can only ever move as a whole.
+| Level | What sits there | What happens |
+|---|---|---|
+| 0 | a loose file at the root | filed by extension |
+| 1 | a folder at the root | a **project**: never entered, moves whole to `Projects\<name>` |
+| 2 | a loose file inside one of the eight category folders | filed by extension — this is how `Documents\screenshot.png` reaches `Pictures\` |
+| 3 | a folder inside a category folder | a **project**, relocated by its contents (below) |
+| 4+ | anything deeper | opaque — part of the project above it |
 
-| Where a folder sits | What happens to it |
-|---|---|
-| Inside a category bucket (`Documents\Sub3`) | relocated by contents: any real document type pins it to `Documents`, otherwise the majority category wins, and a tie or a text-only folder leaves it alone |
-| Inside any other bucket (`05_Admin\06_Engine`) | relocated whole to `Projects\<bucket>\<name>`, contents untouched |
-| Inside `Projects\` already | left alone — that is where it belongs |
+The eight category folders and `Projects\` itself are structure, not projects: they are never relocated. Because level 1 is opaque, the only folders left that give up their loose files are the category folders — a `Media Assets\` folder or a `Work\` folder at the root is now a project, and its files travel inside it to `Projects\Work\` rather than being scattered into `Documents\` and `Pictures\`.
 
-The contents rule only applies to category buckets, and it is deliberately narrow:
+The contents rule at level 3 is deliberately narrow, and it applies only to a folder inside a category folder:
 
 | What is in the folder | Where it belongs |
 |---|---|
@@ -120,30 +123,28 @@ Here is a real render from a test folder, with `-WhatIf`:
 ```
 Organising: C:\Users\you\Downloads\Unsorted
 
-#  File Name    Source     File Type  Destination     Action
--  -----------  ---------  ---------  --------------  -----------
-1  archive.zip  .          Archive    Archives        MOVE
-2  invoice.pdf  .          PDF        Documents       MOVE
-3  build.log    05_Admin   Log        Other           MOVE
-4  notes.txt    05_Admin   Text       Documents       MOVE
-5  stray.png    Documents  Image      Pictures        MOVE
-6  06_Engine    05_Admin   Folder     Projects\05...  MOVE FOLDER
-7  Sub3         Documents  Folder     Pictures        MOVE FOLDER
+  #  File Name    Source     File Type  Destination  Action
+  -  -----------  ---------  ---------  -----------  -----------
+  1  archive.zip  .          Archive    Archives     MOVE
+  2  invoice.pdf  .          PDF        Documents    MOVE
+  3  stray.png    Documents  Image      Pictures     MOVE
+  4  Work         (root)     Folder     Projects     MOVE FOLDER
+  5  Sub3         Documents  Folder     Pictures     MOVE FOLDER
 
 Notes
-05_Admin\06_Engine (2 file(s), kept together) -> Projects\05_Admin\06_Engine
-Documents\Sub3 (10 pictures) -> Pictures\Sub3
+  Work (2 file(s), kept together) -> Projects\Work
+  Documents\Sub3 (3 pictures) -> Pictures\Sub3
 
 Category folders to create: Archives, Music, Other, Pictures, Projects, Software, Videos
-Empty folders after this run: 1 (05_Admin)
-You will be asked whether to delete them.
+Empty folders after this run: 1 (Scratch)
+  You will be asked whether to delete them.
 
-Summary: 5 move, 0 rename, 0 duplicate-remove, 0 lock-remove, 0 skip, 2 folder move
+Summary: 3 move, 0 rename, 0 duplicate-remove, 0 lock-remove, 0 skip, 2 folder move
 ```
 
-Note rows 3 and 4: `05_Admin` is not a category bucket, so its loose files are filed like any others — the `.log` to `Other`, the `.txt` to `Documents` — and the folder is then empty.
+Row 4 is the new level 1: `Work` is not a category folder, so it is a project — it moves whole, and nothing inside it is listed because nothing inside it is touched. Row 5 is the surviving level 3 rule: `Sub3` sits inside a category folder and is made of pictures, so it joins `Pictures`.
 
-Whole-folder moves are asked about separately from the file moves, because they are a bigger decision: `Move these 2 project folders to their matching category? [y/N]`, default No. `-MoveProjects` moves them without asking; `-Force` alone never moves one. A name clash renames the incoming folder `Sub3 (2)` — nothing is ever merged.
+An empty root folder is not a project: it is left to the delete question rather than moved into `Projects\` empty. Whole-folder moves are asked about separately from the file moves, because they are a bigger decision: `Move these 2 project folders to their matching category? [y/N]`, default No. `-MoveProjects` moves them without asking; `-Force` alone never moves one. A name clash renames the incoming folder `Work (2)` — nothing is ever merged.
 
 ### Every run leaves the structure
 
@@ -154,24 +155,34 @@ All eight category folders — `Archives`, `Documents`, `Music`, `Other`, `Pictu
 After the moves, everything left holding no files at any depth is reported and offered for deletion — on a normal run, not only under `-Recurse`:
 
 ```
-Empty folders: 3 (05_Admin, Media Assets, Projects\06_Engine\Logs)
-Delete these 3 empty folders? [y/N]
+Empty folders: 2 (Projects\Work\Logs, Scratch)
+Delete these 2 empty folders? [y/N]
 ```
 
-- Candidates are evaluated *after* the moves, so a bucket that handed over its files is judged empty and a folder that has since gained a file is not.
+- Candidates are evaluated *after* the moves, so a folder that gave up its only file is judged empty and one that has since gained a file is not.
+- A project that is relocated is judged where it lands, not where it was: `Work\Logs` becomes `Projects\Work\Logs` in the preview, so the count it promises is the count the prune reports.
 - Never candidates: the target folder itself, the eight category folders (they are structure, not debris), dotted folders, tooling trees, and any link.
 - Deepest first, so a parent that held only emptied children goes too. Each folder is re-checked immediately before the delete — anything that appeared is kept and logged `PRUNE-SKIPPED`.
 - A file arriving in the instant between that check and the removal makes the removal *fail*, never the file disappear: `Remove-Item` runs without `-Recurse`, so a directory that holds anything cannot be taken.
 - `Remove-Item` is used without `-Recurse`, so a directory that still holds anything cannot be removed even if that check were bypassed.
 - `-Force` never prunes; `-Force -PruneEmpty` prunes without asking.
 
-Because this reaches inside project folders, an empty `Projects\06_Engine\Logs` is a candidate too. Files are never touched, but a project's empty scaffolding can disappear — answer No if that structure matters.
+Because this reaches inside project folders, an empty `Projects\Work\Logs` is a candidate too. Files are never touched, but a project's empty scaffolding can disappear — answer No if that structure matters.
 
 ## Subfolder scan
 
 Off by default, and **only ever reached by typing the switch**. `-Recurse` (or `-MaxDepth N`) files everything, at any depth, into the target's *top-level* category folders — the subfolder structure is not preserved.
 
-There is no prompt offering this. An early version asked `Also sort the 1003 files inside 90 subfolders?` in the double-click flow, which put every project folder one keystroke from being scattered — a folder in the tree is a project by design, so asking to flatten it contradicted the whole point. A plain run now cannot leave the two tidy levels, however many times you press Enter.
+There is no prompt offering this. An early version asked `Also sort the 1003 files inside 90 subfolders?` in the double-click flow, which put every project folder one keystroke from being scattered — a folder in the tree is a project by design, so asking to flatten it contradicted the whole point. A plain run now cannot leave the tidy levels, however many times you press Enter.
+
+This is also the one and only way into a root project folder. A plain run treats every root folder as opaque, so the switch announces how many it is about to open:
+
+```
+WARNING: the subfolder scan will enter 4 root project folder(s) and flatten their contents.
+         Only a plain run moves them whole to Projects\.
+```
+
+The folders it empties are then offered for deletion like any other; it never moves them to `Projects\`, because a flattened project has nothing left to keep together.
 
 ```
 organize-downloads.bat -Recurse -WhatIf      # see what flattening would do, change nothing
@@ -210,6 +221,7 @@ Exit codes: `0` success or nothing to do, `1` an error occurred.
 - **`-Force` detection walks `%*` token by token** rather than piping through `findstr`, so a quoted path containing spaces, `&` or parentheses cannot break it or be mistaken for the switch.
 - **OneDrive folders all report the reparse-point attribute** with an empty `LinkType`, so the subfolder scan filters on `LinkType` rather than the attribute — otherwise the entire tree is silently skipped.
 - **Target resolution is the launcher's own folder, never its parent.** An early version sorted the parent, and a copy dropped into a subfolder tidied the folder above it instead.
+- **The target is resolved with `Get-Item`, not `Resolve-Path`.** `Resolve-Path` returns an 8.3 short name unchanged (`C:\Users\JOEL~1.MAN\…`) while `Get-ChildItem` reports children as long paths, so every relative path carved out with `Substring($Root.Length)` sliced mid-name and produced `y\Work\Logs`.
 
 ## Repo layout
 
@@ -218,11 +230,14 @@ organize-downloads.ps1   the tool
 organize-downloads.bat   double-click launcher
 README.md
 CHANGELOG.md
+VERIFICATION.md         no test runner here: the fixture, the commands and what they printed
 .gitattributes          pins CRLF for the .bat and .ps1 on checkout
 .gitignore              keeps the runtime artefacts out of history
 ```
 
 `organize-log.txt` and `organize-preview.txt` are runtime artefacts and are git-ignored; they are created beside the scripts when a run happens.
+
+There is no automated suite. `VERIFICATION.md` rebuilds a throwaway fixture and lists what each run printed, which is how every claim in the changelog can be checked rather than believed.
 
 ## Licence
 
