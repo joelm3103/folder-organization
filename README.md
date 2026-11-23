@@ -47,6 +47,8 @@ Proceed? [y/N]
 | `-PruneEmpty` | Delete the empty folders left after the moves, without asking. Interactive runs are asked once, deepest first. |
 | `-MoveProjects` | Move the project folders the preview lists, without asking. Interactive runs are asked after the preview instead. |
 | `-Scaffold` | Create all eight category folders, including the ones nothing is filed into. Interactive runs are asked instead and the default answer is No, so `-Force` alone creates only the folders it files into. |
+| `-Exclude <names>` | Leave these folders completely alone: comma-separated names, or paths relative to the folder being organised. Merged with `organize-exclude.txt`. See [Excluded folders](#excluded-folders). |
+| `-ExcludeFile <path>` | Read the exclusion list from another file. Defaults to `organize-exclude.txt` beside the scripts. A path given here and not found is an error; the default file being absent is not. |
 | `-Path <folder>` | Organise a different folder. Defaults to the launcher's own folder. |
 | `-LogFile <path>` | Override the action log. Defaults to `organize-log.txt` beside the scripts. |
 | `-PreviewFile <path>` | Override the long-plan report. Defaults to `organize-preview.txt` beside the log. |
@@ -56,6 +58,7 @@ organize-downloads.bat -WhatIf
 organize-downloads.bat -MaxDepth 1
 organize-downloads.bat -Recurse -PruneEmpty -Force
 organize-downloads.bat "D:\Unsorted Stuff" -Force
+organize-downloads.bat -Exclude "Clients,temp" -WhatIf
 ```
 
 ## Where files go
@@ -83,12 +86,41 @@ These are implemented, not aspirational:
 - **A project folder is opaque to files.** Not one file inside a project is moved, renamed or deleted, at any depth. That covers a folder found inside a category folder *and* every folder sitting at the root: the folder moves whole to `Projects\<name>` and takes its contents with it, including loose files that would have been filed had they sat at the root instead. Empty *directories* inside it are still fair game for the delete question — say No if a project's skeleton matters to you. A destination that already exists is never merged into: the incoming folder is renamed `Work (2)`.
 - **Unknown files are not special.** A `.dwg`, a `.py` or a `.bak` has no better home than `Other\`, and that is where it goes — the same rule as a screenshot. `Other\` is a category, not a scrap heap you have to sort out.
 - **Tooling folders are never entered** — dotted names, `node_modules`, `__pycache__`, `System Volume Information`, `$RECYCLE.BIN` — and neither are junctions or symbolic links.
-- **The tool never moves itself.** `organize-downloads.ps1`, `organize-downloads.bat`, `organize-log.txt` and `organize-preview.txt` are reported as `SKIP` and left where they are.
+- **Excluded folders are never touched.** Anything listed in `organize-exclude.txt` or passed with `-Exclude` is not entered, not swept, not relocated whole and not offered for deletion — and a project folder holding one is left where it is rather than carrying it along. See [Excluded folders](#excluded-folders).
+- **The tool never moves itself.** `organize-downloads.ps1`, `organize-downloads.bat`, `organize-log.txt`, `organize-preview.txt` and `organize-exclude.txt` are reported as `SKIP` and left where they are.
 - **Partial downloads are left alone** — `.crdownload`, `.part`, `.partial`, `.tmp`, `.download` — as are `desktop.ini` and `thumbs.db`.
 - **No input is a no.** Every confirmation is cast to a string and trimmed before it is tested, so an absent, blank or unrecognised answer aborts. `Read-Host` returns `$null` at end of input and `$null -notmatch 'pattern'` evaluates to nothing rather than `$true`, which once let a run with no input available proceed and move files.
 - **Only `~$` lock files are deleted**, which is what Office leaves behind when a document closes badly.
 - **A file already in its destination is never judged a duplicate of itself.**
 - **Every action is logged** with a timestamp, so a run can be unwound by hand from the log.
+
+## Excluded folders
+
+Some folders are not the organiser's business: a working directory, a sync target, a folder whose
+structure is the point. List them once in `organize-exclude.txt` beside the scripts and every run
+skips them, including a double-click, which cannot pass a switch.
+
+```text
+# organize-exclude.txt - one entry per line, # starts a comment
+Keep
+Work\Clients
+Media/Raw
+```
+
+- **A bare entry is a name** and matches a folder of that name at any depth — `Keep` protects
+  `\Keep` and `Work\Keep` alike.
+- **An entry with a slash or backslash is a path** relative to the folder being organised, so it can
+  protect one `Clients` and leave its identically named siblings alone.
+- **Matching is case-insensitive**, and either form protects the folder *and everything beneath it*.
+- **An excluded folder is entirely hands-off**: never entered (not even by `-Recurse`), never swept
+  for loose files, never relocated whole to `Projects\`, and never offered for deletion. A project
+  folder that contains one is left in place rather than moved along with it.
+- **The file is optional.** No file means no exclusions, and a missing default file is silent; a
+  path passed with `-ExcludeFile` that does not exist is an error, so a typo cannot quietly
+  unprotect a folder. The preview prints the active rules and where they came from.
+- **`-Exclude "a,b"`** adds rules for one run without editing the file. Both sources are merged.
+- **The built-in tooling list is separate.** `node_modules`, `.git`, `__pycache__` and friends stay
+  uneditable; this file adds to what the tool refuses, it does not replace it.
 
 ## Levels, projects and empty folders
 
@@ -251,7 +283,7 @@ VERIFICATION.md         no test runner here: the fixture, the commands and what 
 .gitignore              keeps the runtime artefacts out of history
 ```
 
-`organize-log.txt` and `organize-preview.txt` are runtime artefacts and are git-ignored; they are created beside the scripts when a run happens.
+`organize-log.txt` and `organize-preview.txt` are runtime artefacts and are git-ignored; they are created beside the scripts when a run happens. `organize-exclude.txt` is optional per-copy configuration, also git-ignored — a list of your own folder names does not belong in the repository.
 
 There is no automated suite. `VERIFICATION.md` rebuilds a throwaway fixture and lists what each run printed, which is how every claim in the changelog can be checked rather than believed.
 
