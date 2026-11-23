@@ -11,6 +11,7 @@ the run can be repeated. Nothing here is reconstructed from memory — the figur
 runs printed.
 
 - Recorded: 2026-11-17, on branch `feature/root-folders-as-projects`.
+- Recorded: 2026-11-23, on branch `feat/exclude-folders` — the excluded-folder checks (11–17) below.
 - Environment: Windows, **Windows PowerShell 5.1** (`powershell -NoProfile -ExecutionPolicy Bypass`).
 
 ## Reproduce the fixture
@@ -107,11 +108,66 @@ Create all eight category folders? [y/N]
 The other interactive paths — declining a folder move, the prune question, the no-input matrix — are
 still covered only by earlier passes, not by this transcript.
 
+## Excluded folders
+
+The exclusion feature gets its own fixture rather than perturbing the one above, because what has to be
+proved is an absence: a protected tree must not appear in the plan, in the prune list or in the log.
+
+```powershell
+$fx = Join-Path $env:TEMP 'fo-exclude'
+Remove-Item $fx -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($d in 'Work\Clients','Keep\sub','Keep\EmptyDir','Move Me','Documents') {
+    [void](New-Item -ItemType Directory -Path (Join-Path $fx $d) -Force)
+}
+[System.IO.File]::WriteAllText((Join-Path $fx 'Work\a.pdf'), 'a')
+[System.IO.File]::WriteAllText((Join-Path $fx 'Work\Clients\x.pdf'), 'c')
+[System.IO.File]::WriteAllText((Join-Path $fx 'Keep\b.txt'), 'b')
+[System.IO.File]::WriteAllText((Join-Path $fx 'Keep\sub\c.png'), 'p')
+[System.IO.File]::WriteAllText((Join-Path $fx 'Move Me\d.pdf'), 'd')
+[System.IO.File]::WriteAllText((Join-Path $fx 'Documents\shot.png'), 's')
+Copy-Item .\organize-downloads.ps1, .\organize-downloads.bat $fx
+[System.IO.File]::WriteAllText((Join-Path $fx 'organize-exclude.txt'), "# standing exclusions`r`nKeep`r`nWork\Clients`r`n")
+```
+
+The script is copied into the fixture so the default `organize-exclude.txt` resolves there rather than
+to this repository. `Keep` is a name rule; `Work\Clients` is a path rule.
+
+| # | Check | Command | Observed |
+|---|---|---|---|
+| 11 | A name rule and a path rule are read, applied and stated | `.\organize-downloads.ps1 -Path $fx -WhatIf` | `Excluded: 2 rule(s) (Keep, Work\Clients)`, `Never entered, moved or pruned. Source: organize-exclude.txt`, `Left in place because it holds one: Work`; rows only `shot.png Documents Image Pictures MOVE` and `Move Me (root) Folder Projects MOVE FOLDER`; `Summary: 1 move, 0 rename, 0 duplicate-remove, 0 lock-remove, 3 skip, 1 folder move`; exit 0 |
+| 12 | `-Recurse` does not enter an excluded path, and a path rule protects only that copy | `-Recurse -WhatIf -ExcludeFile $fx\path-only.txt` (file contains only `Work\Clients`) | `Excluded: 1 rule(s) (Work\Clients)`; `WARNING: the subfolder scan will enter 3 root project folder(s)`; rows include `b.txt Keep Text Documents MOVE` and `c.png Keep\sub Image Pictures MOVE`; **no** row for `Clients\x.pdf`; `Empty folders after this run: 4 (Keep\EmptyDir, Keep\sub, Keep, Move Me)` — `Work\Clients` is not a candidate |
+| 13 | `-Exclude` merges with the file, and splits a quoted comma list | `-WhatIf -ExcludeFile $fx\empty.txt -Exclude 'Work\Clients,Keep'` | `Excluded: 2 rule(s) (Work\Clients, Keep)`, `Source: empty.txt, -Exclude`; `MOVE FOLDER` only for `Move Me`; exit 0 |
+| 14 | A missing explicitly-passed file fails closed | `-WhatIf -ExcludeFile $fx\nope.txt` | `ERROR: exclusion file not found: …\nope.txt`; exit 1 |
+| 15 | Execution leaves every protected tree byte-intact | `-Force -MoveProjects -PruneEmpty`, then `Get-ChildItem $fx -Recurse -Force` | `Keep\b.txt`, `Keep\sub\c.png`, `Keep\EmptyDir`, `Work\a.pdf`, `Work\Clients\x.pdf` all still present; `Projects\Move Me\d.pdf` moved; only `Pictures\shot.png` was filed |
+| 16 | The log never names a protected file | `grep -cE 'b\.txt\|c\.png\|x\.pdf' $fx\organize-log.txt` | `0`. The log holds `SKIPPED organize-*.{ps1,bat,txt}`, `CREATED-FOLDER …\Pictures`, `MOVED Documents\shot.png -> …\Pictures`, `CREATED-FOLDER …\Projects`, `MOVED-FOLDER Move Me -> Projects\Move Me` |
+| 17 | Excluding a category folder stops that sweep | Fixture `fo-exclude-cat` holding only `Documents\shot.png`; control `-ExcludeFile none.txt`, then `-ExcludeFile cat.txt` (`Documents`) | Control: row `shot.png Documents Image Pictures MOVE`. Excluded: no `shot.png` row at all, `Excluded: 1 rule(s) (Documents)`, and the Source column disappears with the sweep |
+| 18 | The long report states the active rules | 61-file fixture plus `organize-exclude.txt` containing `Keep`; `-WhatIf`, then read `organize-preview.txt` | Header reads `Files      : 64` … `Exclude    : 1 rule(s) (Keep) from organize-exclude.txt` |
+
+Two results are worth naming because they are the design, not side effects:
+
+- `Work` is **not** relocated in check 11, even though `Work` itself is not excluded. `Work\Clients`
+is, and moving the parent would move the protected folder with it; the preview says so under
+`Left in place because it holds one:`. Under `-Recurse` (check 12) `Work` *is* entered and flattened —
+an exclusion governs what the tool does to a tree, and a scan that was typed deliberately still files
+`Work\a.pdf`.
+- `Keep\EmptyDir` survives check 15 with `-PruneEmpty`. The prune walk enumerates the whole tree itself
+and never passed through `Keep`, so it reaches the child directly; `Test-ExcludedTree` refuses it by
+segment. Without that, exclusion would only protect a folder from the passes that happened to visit
+its parent.
+
+## Note on a pre-existing gap this change did not close
+
+`Get-ScanTargets` does not consult `$NeverSweep` (confirmed by reading the function at `c6dc171`), so
+`-Recurse` enters `node_modules`, `.git`, `__pycache__` and the rest — contradicting the README's "tooling
+folders are never entered". It is visible in check 12's control run, where `node_modules\m.js` appears as
+a flattenable row. User exclusions *are* applied in that function; the hardcoded list is not. Left as a
+separate fix rather than folded into this pass.
+
 ## Not covered by this transcript
 
 - The launcher (`organize-downloads.bat`) end to end: the double-click pause, the `-Force` token walk and
-  the exit-code echo were verified in earlier passes and are unchanged by this work; the `.bat` was not
-  modified.
+  the exit-code echo were verified in earlier passes and are unchanged by this work. The `.bat` gained
+  usage documentation only — no executable line changed, so there is nothing new to exercise there.
 - The interactive path: declining the folder move (`Project folders left in place.`), answering the
   prune question `y`/`n`, and the "no input is a no" matrix. All exercised in earlier passes; none of
   those code paths changed here.
