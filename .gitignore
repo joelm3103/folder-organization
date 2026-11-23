@@ -1,3 +1,5 @@
 # Runtime artefacts written beside the scripts by a run
 organize-log.txt
 organize-preview.txt
+# Optional per-copy exclusion list - local folder names, not repo content
+organize-exclude.txt

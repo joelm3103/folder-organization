@@ -4,12 +4,19 @@ REM
 REM Put this .bat and the .ps1 in the folder you want sorted, then double-click. The folder they
 REM sit in is the folder that gets organised; -Path overrides it.
 REM
-REM Usage: organize-downloads.bat [-Recurse] [-MaxDepth N] [-WhatIf] [-Force] [-MoveProjects] [-LogFile "path"] [-PreviewFile "path"] [-PruneEmpty] ["path to organise"]
+REM Usage: organize-downloads.bat [-Recurse] [-MaxDepth N] [-WhatIf] [-Force] [-MoveProjects] [-LogFile "path"] [-PreviewFile "path"] [-PruneEmpty] [-Exclude "a,b"] [-ExcludeFile "path"] ["path to organise"]
 REM   -Recurse / -MaxDepth  also sort files found in subfolders - the ONLY way to flatten a tree.
 REM                         A double-click never asks, so it can never scatter a project folder.
 REM   -MoveProjects         move project folders where they belong - into Projects\<bucket>\, or into
 REM                         the category a category-folder child's contents belong in (asks first)
 REM   -PruneEmpty           delete the empty folders found after the moves (asks first otherwise)
+REM   -Exclude "a,b"        leave these folders completely alone this run. A bare name matches at any
+REM                         depth; an entry with a backslash is a path from the folder being sorted.
+REM   -ExcludeFile "path"   read the list from that file instead of organize-exclude.txt.
+REM
+REM Standing exclusions go in organize-exclude.txt next to this launcher - one name or path per line,
+REM # for a comment. That file is the only way to exclude something on a double-click, and it is
+REM optional: without it nothing is excluded.
 REM
 REM The window stays open at the end so the result can be read. Pass -Force to skip that pause:
 REM unattended runs (Task Scheduler) and any other -Force caller exit immediately.

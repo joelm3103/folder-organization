@@ -48,13 +48,20 @@
     or lock-file decision - can be read without losing any of them to the row cap. A dry run writes
     that report too; it is a report, not a change to the folder being sorted.
 
+    Folders you want left alone can be excluded: put them in organize-exclude.txt beside this script,
+    or pass -Exclude. An excluded folder is never entered, never swept, never relocated whole to
+    Projects\ and never offered for deletion, at any depth. A bare entry is a NAME and matches a folder
+    of that name anywhere in the tree; an entry containing a backslash or a slash is a PATH relative to
+    the folder being organised. The built-in tooling list (node_modules, .git and friends) is separate
+    and not edited by this file.
+
     Collisions are handled, not overwritten:
       * destination already holds the same name with identical bytes  -> incoming copy deleted
       * destination already holds the same name with different bytes -> incoming copy renamed "(2)"
       * two files in the same run claiming one destination            -> same rules, tracked up front
 
-    The script never moves or deletes its own files: organize-downloads.ps1, organize-downloads.bat
-    and organize-log.txt are listed as SKIP rows.
+    The script never moves or deletes its own files: organize-downloads.ps1, organize-downloads.bat,
+    organize-log.txt, organize-preview.txt and organize-exclude.txt are listed as SKIP rows.
 
     Default is a preview plus a [y/N] prompt. -WhatIf previews and exits. -Force runs unattended.
     Nothing asks about subfolders any more: only -Recurse or -MaxDepth reaches them, so a double-click
@@ -87,6 +94,17 @@
     after the preview instead, and the default answer is no; -Force never prompts, so this switch is
     how an unattended run leaves the whole structure behind. Without it a run creates only the folders
     it files into.
+
+.PARAMETER Exclude
+    Folder names or root-relative paths to leave completely alone, comma-separated. Merged with the
+    entries in the exclusion file. A name matches at any depth; an entry containing a backslash or a
+    slash is a path relative to the folder being organised. An excluded folder is never entered,
+    swept, moved whole or offered for deletion.
+
+.PARAMETER ExcludeFile
+    Override the exclusion list path. Defaults to organize-exclude.txt beside this script. That file
+    missing is not an error - it simply means no exclusions. A path passed here explicitly and not
+    found is an error, so a typo cannot silently unprotect a folder.
 
 .PARAMETER WhatIf
     Print the planned actions and exit without changing anything.
@@ -121,6 +139,14 @@
     Tidy the category folders and relocate any project folder that clearly belongs elsewhere,
     without asking anything.
 
+.EXAMPLE
+    .\organize-downloads.bat -Recurse -PruneEmpty -WhatIf
+    Preview a flattening run that would also delete the folders it empties.
+
+.EXAMPLE
+    .\organize-downloads.bat -Exclude "Clients,temp" -WhatIf
+    Preview a run that leaves Clients\, temp\ and every folder of either name completely alone.
+
 .NOTES
     Windows PowerShell 5.1 built-ins only. No admin rights required.
 #>
@@ -135,7 +161,9 @@ param(
     [switch]$MoveProjects,
     [switch]$Scaffold,
     [string]$LogFile,
-    [string]$PreviewFile
+    [string]$PreviewFile,
+    [string[]]$Exclude = @(),
+    [string]$ExcludeFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -153,8 +181,21 @@ if ([string]::IsNullOrWhiteSpace($LogFile)) {
 if ([string]::IsNullOrWhiteSpace($PreviewFile)) {
     $PreviewFile = Join-Path (Split-Path -Parent $LogFile) 'organize-preview.txt'
 }
+
+# The exclusion list lives beside the scripts by default, like the log and the preview: a copy dropped
+# into a working folder carries its own list. A missing DEFAULT file is silent - most copies will not
+# have one. A missing file the caller named is an error, because a typo must not quietly unprotect a
+# folder.
+$excludeExplicit = -not [string]::IsNullOrWhiteSpace($ExcludeFile)
+if (-not $excludeExplicit) {
+    $ExcludeFile = Join-Path $ScriptDir 'organize-exclude.txt'
+}
 if ($MaxDepth -lt 0) {
     Write-Host 'ERROR: -MaxDepth must be zero or greater.' -ForegroundColor Red
+    exit 1
+}
+if ($excludeExplicit -and -not (Test-Path -LiteralPath $ExcludeFile -PathType Leaf)) {
+    Write-Host "ERROR: exclusion file not found: $ExcludeFile" -ForegroundColor Red
     exit 1
 }
 
@@ -211,10 +252,54 @@ $SkipExtensions = @('crdownload','part','partial','tmp','download')
 $SkipNames      = @('desktop.ini','thumbs.db')
 
 # The organiser's own files: always left exactly where they are.
-$ToolFiles = @('organize-downloads.ps1','organize-downloads.bat','organize-log.txt','organize-preview.txt')
+$ToolFiles = @('organize-downloads.ps1','organize-downloads.bat','organize-log.txt','organize-preview.txt','organize-exclude.txt')
 
 # Never entered, never emptied, never judged: tool and OS trees that hold a structure of their own.
+# Fixed on purpose - these are the tool's own safety floor, and the user list below is a separate layer.
 $NeverSweep = @('node_modules', '__pycache__', 'system volume information', '$recycle.bin', '.git', '.svn')
+
+# ---------------------------------------------------------------- user exclusions
+# Two sources, merged: organize-exclude.txt beside this script, and -Exclude typed on the command line.
+# Entries are ordinary folder rules, not patterns. A bare entry is a NAME and matches a folder of that
+# name at any depth; an entry holding a separator is a PATH relative to the folder being organised.
+# Either form protects the folder and everything beneath it. Stored lower-cased for comparison, with
+# the parsed spelling kept separately so the preview can print what the user wrote.
+$ExcludedNames  = New-Object System.Collections.ArrayList
+$ExcludedPaths  = New-Object System.Collections.ArrayList
+$excludeRules   = New-Object System.Collections.ArrayList
+$excludeSources = New-Object System.Collections.ArrayList
+
+$excludeLines = New-Object System.Collections.ArrayList
+if (Test-Path -LiteralPath $ExcludeFile -PathType Leaf) {
+    [void]$excludeSources.Add((Split-Path -Leaf $ExcludeFile))
+    foreach ($line in @(Get-Content -LiteralPath $ExcludeFile -ErrorAction SilentlyContinue)) {
+        [void]$excludeLines.Add($line)
+    }
+}
+if ($Exclude.Count -gt 0) { [void]$excludeSources.Add('-Exclude') }
+# Split again on commas: -Exclude "a,b" arrives as one array element, while -Exclude a,b arrives as two.
+foreach ($value in @($Exclude)) {
+    foreach ($part in ([string]$value).Split(',')) { [void]$excludeLines.Add($part) }
+}
+
+foreach ($line in $excludeLines) {
+    $entry = ([string]$line).Trim()
+    if (-not $entry) { continue }
+    if ($entry.StartsWith('#')) { continue }
+    # One separator convention, so a path typed with forward slashes still matches a real folder.
+    $entry = $entry.Replace('/', '\').Trim('\')
+    if (-not $entry) { continue }
+    $key = $entry.ToLowerInvariant()
+    if ($entry.Contains('\')) {
+        if ($ExcludedPaths -contains $key) { continue }
+        [void]$ExcludedPaths.Add($key)
+    }
+    else {
+        if ($ExcludedNames -contains $key) { continue }
+        [void]$ExcludedNames.Add($key)
+    }
+    [void]$excludeRules.Add($entry)
+}
 
 $Map = @{}
 foreach ($cat in $Rules.Keys) {
@@ -317,6 +402,48 @@ function Get-UniquePath([string]$dir, [string]$name, [hashtable]$Reserved) {
     return $candidate
 }
 
+# A user exclusion, tested against a folder's path relative to the organised folder and its leaf name.
+# The relative path is what lets a PATH entry name one folder and leave an identically named sibling
+# alone; the name is what makes a bare entry match at any depth. Both are lower-cased comparisons, and
+# a trailing-separator match means everything inside an excluded folder is refused as well.
+function Test-Excluded([string]$Relative, [string]$Name) {
+    if ($ExcludedNames -contains $Name.ToLowerInvariant()) { return $true }
+    $key = $Relative.ToLowerInvariant()
+    foreach ($path in $ExcludedPaths) {
+        if ($key -eq $path) { return $true }
+        if ($key.StartsWith($path + '\')) { return $true }
+    }
+    return $false
+}
+
+# The same rules for a path none of the earlier passes visited. The prune walk enumerates the whole tree
+# itself, so an excluded folder's children are candidates there even though the folder was never entered
+# - every segment has to be tested, exactly as it is for $NeverSweep.
+function Test-ExcludedTree([string]$Relative) {
+    $key = $Relative.ToLowerInvariant()
+    foreach ($path in $ExcludedPaths) {
+        if ($key -eq $path) { return $true }
+        if ($key.StartsWith($path + '\')) { return $true }
+    }
+    foreach ($segment in $key.Split('\')) {
+        if ($ExcludedNames -contains $segment) { return $true }
+    }
+    return $false
+}
+
+# A folder this run would relocate must not carry an excluded folder with it. The exclusion protects a
+# folder, not just its own row: moving its parent moves it, so a project holding an excluded folder
+# stays where it is. Without this, excluding 'Projects\Big\Keep' would still let Big move wholesale.
+function Test-HoldsExcluded([string]$Folder) {
+    $full = (Get-Item -LiteralPath $Folder).FullName
+    foreach ($dir in @(Get-ChildItem -LiteralPath $full -Directory -Force -Recurse -ErrorAction SilentlyContinue)) {
+        if ($dir.LinkType) { continue }
+        $relative = $dir.FullName.Substring($Path.Length).TrimStart('\')
+        if (Test-ExcludedTree $relative) { return $true }
+    }
+    return $false
+}
+
 # Subfolders a scan would visit: never a category folder, never a link (junction / symbolic link -
 # the only reparse points that can loop), never deeper than -MaxDepth. Note: OneDrive marks every
 # synced folder ReparsePoint with an empty LinkType, so filtering on the attribute alone would skip
@@ -332,11 +459,14 @@ function Get-ScanTargets([string]$Root, [int]$MaxDepth) {
             if ($Categories -contains $child.Name) { continue }
             if ($child.LinkType) { continue }
 
-            $depth = $node.Depth + 1
-            if ($MaxDepth -gt 0 -and $depth -gt $MaxDepth) { continue }
-
+            # -Recurse and -MaxDepth are the only ways into a subfolder, so an exclusion has to be
+            # refused here or a flattened run would pull the folder's contents out anyway.
             if ($node.Relative -eq '.') { $relative = $child.Name }
             else { $relative = $node.Relative + '\' + $child.Name }
+            if (Test-Excluded $relative $child.Name) { continue }
+
+            $depth = $node.Depth + 1
+            if ($MaxDepth -gt 0 -and $depth -gt $MaxDepth) { continue }
 
             [void]$found.Add([pscustomobject]@{ Dir = $child.FullName; Depth = $depth; Relative = $relative })
             $queue.Enqueue([pscustomobject]@{ Dir = $child.FullName; Depth = $depth; Relative = $relative })
@@ -370,10 +500,13 @@ function Get-ProjectFolders([string]$Root, [string[]]$Buckets) {
         $bucketDir = Join-Path $Root $bucket
         if (-not (Test-Path -LiteralPath $bucketDir -PathType Container)) { continue }
         $isCategory = $Categories -contains $bucket
+        # An excluded bucket is not a bucket any more: nothing inside it is a project candidate.
+        if (Test-Excluded $bucket $bucket) { continue }
         foreach ($child in @(Get-ChildItem -LiteralPath $bucketDir -Directory -Force -ErrorAction SilentlyContinue)) {
             if ($child.LinkType) { continue }
             if ($child.Name.StartsWith('.')) { continue }
             if ($NeverSweep -contains $child.Name.ToLowerInvariant()) { continue }
+            if (Test-Excluded ($bucket + '\' + $child.Name) $child.Name) { continue }
             [void]$out.Add([pscustomobject]@{
                 Dir = $child.FullName; Name = $child.Name; Parent = $bucket; IsCategory = $isCategory
             })
@@ -440,6 +573,10 @@ function Get-EmptyFolders([string]$Root, [string[]]$Departing, [hashtable]$Rewri
                 break
             }
         }
+        # Excluded trees are refused for the same reason, and refused down to the leaf: this walk
+        # enumerates the whole tree itself, so it reaches an excluded folder's children even though no
+        # other pass ever entered the folder.
+        if (-not $blocked -and (Test-ExcludedTree $relative)) { $blocked = $true }
         if ($blocked) { continue }
         $remaining = 0
         foreach ($file in @(Get-ChildItem -LiteralPath $dir.FullName -File -Force -Recurse -ErrorAction SilentlyContinue)) {
@@ -487,8 +624,11 @@ $rootChildren = @(Get-ChildItem -LiteralPath $Path -Directory -Force -ErrorActio
     Where-Object {
         -not $_.LinkType -and
         -not $_.Name.StartsWith('.') -and
-        -not ($NeverSweep -contains $_.Name.ToLowerInvariant())
+        -not ($NeverSweep -contains $_.Name.ToLowerInvariant()) -and
+        -not (Test-Excluded $_.Name $_.Name)
     } | Sort-Object Name)
+# An excluded folder is neither a category root to sweep nor a project to relocate, so it drops out of
+# both lists here and every later pass - including the -Recurse warning count - follows automatically.
 $categoryRoots = @($rootChildren | Where-Object { $Categories -contains $_.Name })
 $rootFolders = @($rootChildren | Where-Object { -not ($Categories -contains $_.Name) })
 
@@ -698,6 +838,7 @@ $folderPlan = New-Object System.Collections.ArrayList
 $reservedFolders = @{}
 
 $projects = New-Object System.Collections.ArrayList
+$heldByExclusion = New-Object System.Collections.ArrayList
 
 # Level 1. Under -Recurse the scan enters these folders and flattens them instead, so they are not
 # planned as moves: whatever the scan empties falls to the deletion question like any other folder.
@@ -706,6 +847,7 @@ if (-not $useSubfolders) {
         # An empty root folder is debris, not a project, and moving it would only fill Projects\ with
         # empty folders the next run has to walk. It is left to the prune question instead.
         if ((Get-FolderFileCount $dir.FullName) -eq 0) { continue }
+        if (Test-HoldsExcluded $dir.FullName) { [void]$heldByExclusion.Add($dir.Name); continue }
         [void]$projects.Add([pscustomobject]@{
             Dir = $dir.FullName; Name = $dir.Name; Parent = '.'; IsCategory = $false
         })
@@ -716,6 +858,10 @@ if (-not $useSubfolders) {
 # they are dropped before the move is planned.
 foreach ($project in @(Get-ProjectFolders $Path @($Categories))) {
     if ($project.Parent -eq $ProjectBucket) { continue }
+    if (Test-HoldsExcluded $project.Dir) {
+        [void]$heldByExclusion.Add(('{0}\{1}' -f $project.Parent, $project.Name))
+        continue
+    }
     [void]$projects.Add($project)
 }
 
@@ -950,6 +1096,18 @@ if ($notes.Count -gt 0) {
 
 # The two things this run may do besides moving files. Shown before the prompt so nobody has to read the
 # log to find out that folders are about to appear, or that a batch is about to be deleted.
+# An enabled exclusion list is stated up front too: a folder silently missing from the rows is otherwise
+# indistinguishable from a folder the ruleset had nothing to say about.
+if ($excludeRules.Count -gt 0) {
+    $ruleSample = (@($excludeRules | Select-Object -First 6) -join ', ')
+    $ruleTail = if ($excludeRules.Count -gt 6) { ', ...' } else { '' }
+    Write-Host ''
+    Write-Host ('Excluded: {0} rule(s) ({1}{2})' -f $excludeRules.Count, $ruleSample, $ruleTail) -ForegroundColor DarkGray
+    Write-Host ('  Never entered, moved or pruned. Source: {0}' -f ($excludeSources -join ', ')) -ForegroundColor DarkGray
+    if ($heldByExclusion.Count -gt 0) {
+        Write-Host ('  Left in place because it holds one: {0}' -f (@($heldByExclusion | Select-Object -Unique) -join ', ')) -ForegroundColor DarkGray
+    }
+}
 if ($scaffoldMissing.Count -gt 0) {
     Write-Host ''
     if ($scaffoldMode -eq 'minimal') {
@@ -1034,6 +1192,12 @@ if ($rows.Count -gt $shown) {
     [void]$lines.Add(('Files      : {0}' -f $rows.Count))
     if ($sweptFolders -gt 0) {
         [void]$lines.Add(('Categories : {0} folder(s) swept, {1} file(s), {2} already in place' -f $sweptFolders, $sweepFiles, $inPlaceCount))
+    }
+    if ($excludeRules.Count -gt 0) {
+        [void]$lines.Add(('Exclude    : {0} rule(s) ({1}) from {2}' -f $excludeRules.Count, ($excludeRules -join ', '), ($excludeSources -join ', ')))
+        if ($heldByExclusion.Count -gt 0) {
+            [void]$lines.Add(('Held       : {0} folder(s) left in place, holding an excluded folder' -f @($heldByExclusion | Select-Object -Unique).Count))
+        }
     }
     if ($scaffoldMissing.Count -eq 0) {
         [void]$lines.Add('Scaffold   : complete')
