@@ -12,6 +12,92 @@ Two conventions, so an entry is never read as more than it is:
 - An entry recorded after the fact **says so**, so a retrospective note cannot be mistaken for a
   same-day record.
 
+## [2026-11-23]
+
+**In short:**
+
+- Folders can now be **excluded from organising entirely** — by name at any depth, or by a path
+  relative to the folder being sorted. An excluded folder is never entered, swept, relocated whole or
+  offered for deletion, and a project folder that holds one is left in place rather than carrying it
+  along.
+- Two sources, merged: `organize-exclude.txt` beside the script (one entry per line, `#` comments) and
+  a new `-Exclude` switch. The file is what makes this usable on a double-click, which cannot pass a
+  switch; `-ExcludeFile` points at a different list.
+- The hardcoded tooling list (`node_modules`, `.git`, `__pycache__`, …) is unchanged and still not
+  user-editable. This is a second layer on top of it, not a replacement.
+
+### Added
+
+- `organize-exclude.txt`, optional and read from beside the script. Blank lines and `#` comments are
+  ignored, `-ExcludeFile <path>` overrides the location, and the file being absent means no exclusions
+  rather than an error.
+- `-Exclude <entry[,entry]>` for one-off exclusions, merged with the file's entries. Both are parsed
+  the same way, de-duplicated, and printed in the preview with the source they came from.
+- Matching rules, chosen for the least surprise:
+  - a bare entry is a **name** and matches a folder of that name at any depth (`Keep` covers `\Keep`
+    and `Work\Keep`);
+  - an entry containing `\` or `/` is a **path relative to the folder being organised**, so one
+    `Clients` can be protected while its siblings are not;
+  - comparison is case-insensitive, and either form protects the folder and everything beneath it.
+- Five gates, so "excluded" holds everywhere rather than only where it was easy to add: the subfolder
+  scan (`-Recurse` / `-MaxDepth` never enters one), root project classification (never relocated to
+  `Projects\`), the category-folder sweep (excluding `Documents` stops that sweep), the project
+  candidate list inside a category folder, and the prune walk (a folder inside an excluded tree is
+  never offered for deletion, even though the walk never passed through the parent).
+- `Test-HoldsExcluded`: a project folder that contains an excluded folder is left where it is instead
+  of being moved wholesale. Excluding `Work\Clients` and then relocating `Work\` would otherwise move
+  the protected folder indirectly — the preview names it under `Left in place because it holds one:`.
+- Preview and long-report visibility: `Excluded: N rule(s) (…)` with `Never entered, moved or pruned.
+  Source: …` before the prompt, and an `Exclude    : N rule(s) (…) from …` line in the full-list
+  report's summary block, so a folder missing from the rows cannot be mistaken for one the ruleset had
+  nothing to say about.
+- A missing file passed with `-ExcludeFile` is `ERROR: exclusion file not found` and exit 1, while a
+  missing default file stays silent. A typo must not quietly unprotect a folder.
+
+### Changed
+
+- `organize-exclude.txt` joins `$ToolFiles`: it sits beside the script in a normal deployment, which is
+  inside the folder being sorted, so without this it would have been filed into `Documents\` on the
+  first run.
+- The script's own help, the `.bat` usage legend and the README now describe the exclusion layer. The
+  README gained an `## Excluded folders` section, two Options rows and a Safety-rules bullet; the
+  "never moves itself" lists now include the exclusion file (and `organize-preview.txt`, which was
+  already missing from the `.ps1` help).
+- `.gitignore` ignores `organize-exclude.txt`: it holds local folder names and belongs to a copy, not
+  to the repository.
+
+### Verified
+
+- Throwaway fixtures under `%TEMP%`, Windows PowerShell 5.1, with the script copied into the fixture so
+  the default exclusion file resolves there. Commands and printed values are in `VERIFICATION.md`
+  (checks 11–17); the figures below are that run:
+  - A plain `-WhatIf` with `Keep` and `Work\Clients` excluded planned one move and one folder move,
+    printed `Excluded: 2 rule(s) (Keep, Work\Clients)` and `Left in place because it holds one: Work`,
+    and listed no row from either protected tree.
+  - `-Recurse -WhatIf` with only `Work\Clients` excluded still flattened `Work\a.pdf` but printed no
+    row for `Clients\x.pdf`, and did not offer `Work\Clients` for deletion — proving the path rule
+    protects the named copy alone.
+  - `-Exclude "Work\Clients,Keep"` with an empty file produced `Excluded: 2 rule(s) (Work\Clients,
+    Keep)` and `Source: empty.txt, -Exclude`, so the two sources merge and the switch splits a quoted
+    comma list.
+  - `-ExcludeFile <missing>` printed `ERROR: exclusion file not found: …\nope.txt` and exited 1.
+  - `-Force -MoveProjects -PruneEmpty` left `Keep\{b.txt, sub\c.png, EmptyDir}`, `Work\a.pdf` and
+    `Work\Clients\x.pdf` exactly where they were, moved `Move Me` to `Projects\Move Me`, and logged no
+    line naming any protected file — `grep -cE 'b\.txt|c\.png|x\.pdf'` on the log returned 0.
+  - Excluding the `Documents` category folder removed `Documents\shot.png` from the plan where the
+    control run listed it as `MOVE Pictures`.
+  - A 61-row plan wrote `Exclude    : 1 rule(s) (Keep) from organize-exclude.txt` into
+    `organize-preview.txt`.
+- **Not verified on the deployed copies.** `Desktop\Files to Sort` and `Downloads\Other` still hold
+  the pre-2026-11-17 script and are untouched by this change.
+
+### Found, not fixed
+
+- `Get-ScanTargets` never applies `$NeverSweep`, so `-Recurse` does enter `node_modules` and `.git`
+  despite the README's "tooling folders are never entered". Confirmed pre-existing on `c6dc171` by
+  reading the committed function. Left alone as outside this change's scope; it is now the only place
+  the two lists differ, because user exclusions *are* applied there.
+
 ## [2026-11-17]
 
 **In short:**
